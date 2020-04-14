@@ -1,6 +1,7 @@
 import MySQLdb
 import sys
 import math
+import datetime
 
 class LadderDatabase:
     def __init__(self, credentialFile):
@@ -137,11 +138,64 @@ class LadderDatabase:
         else:
             return lowestRank
 
-    # Returns if the user still has to cool down after issuing their last challenge
+    # Returns true if currently can't issue challenges due to being on timeout
     def hasChallengeTimeout(self, discordID, ladder = ''):
         if ladder == '':
             ladder = self.getConfig('current_ladder')
-        # TODO
+
+        self.cursor.execute("SELECT OutgoingTimeoutUntil FROM Players WHERE DiscordID=%s AND Ladder=%s;", (discordID, ladder,))
+        result = self.cursor.fetchall()
+
+        if result[0][0] is None:
+            return False
+
+        timeoutEnd = result[0][0]
+        currentTime = datetime.datetime.now()
+
+        return timeoutEnd > currentTime
+
+    # Returns true if the user is currently protected from challenges
+    def hasChallengeProtection(self, discordID, ladder = ''):
+        if ladder == '':
+            ladder = self.getConfig('current_ladder')
+
+        self.cursor.execute("SELECT IngoingTimeoutUntil FROM Players WHERE DiscordID=%s AND Ladder=%s;", (discordID, ladder,))
+        result = self.cursor.fetchall()
+
+        if result[0][0] is None:
+            return False
+
+        timeoutEnd = result[0][0]
+        currentTime = datetime.datetime.now()
+
+        return timeoutEnd > currentTime
+
+    # Return true if player 1 is allowed to challenge player 2 with their current ranking
+    # This is the case if player 1 is either:
+    # a) one tier below player 2
+    # b) in the same tier as player 2, but has a lower rank
+    def canChallenge(self, discordID1, discordID2, ladder = ''):
+        if ladder == '':
+            ladder = self.getConfig('current_ladder')
+
+        self.cursor.execute("SELECT Rank, Tier FROM Players WHERE DiscordID=%s AND Ladder=%s;", (discordID1, ladder,))
+        result = self.cursor.fetchall()
+        rank1 = result[0][0]
+        tier1 = result[0][1]
+
+        self.cursor.execute("SELECT Rank, Tier FROM Players WHERE DiscordID=%s AND Ladder=%s;", (discordID2, ladder,))
+        result = self.cursor.fetchall()
+        rank2 = result[0][0]
+        tier2 = result[0][1]
+
+        if rank1 is None or tier1 is None or rank2 is None or tier2 is None:
+            return False
+
+        if tier1 == tier2:
+            return rank1 > rank2
+        else:
+            return tier1 == tier2 + 1
+
 
 
 ##### CHALLENGES #####
@@ -152,7 +206,6 @@ class LadderDatabase:
             self.cursor.execute("""
             CREATE TABLE Challenges (
                 ChallengeID INT AUTO_INCREMENT,
-                Ladder varchar(255) NOT NULL,
                 IssuedByID INT NOT NULL,
                 OpponentID INT NOT NULL,
                 Time DATETIME DEFAULT NOW(),
@@ -163,7 +216,37 @@ class LadderDatabase:
 
             print('Created table "Challenges".')
 
+    # Returns true if the player is currently challenging at least one other player
+    def isCurrentlyChallenging(self, discordID, ladder = ''):
+        if ladder == '':
+            ladder = self.getConfig('current_ladder')
 
+        self.cursor.execute("SELECT COUNT(*) FROM Challenges LEFT JOIN Players ON Challenges.IssuedByID=Players.PlayerID WHERE DiscordID=%s AND Ladder=%s AND State='pending';", (discordID, ladder,))
+        result = self.cursor.fetchall()
+
+        outgoingChallengeCount = result[0][0]
+
+        if outgoingChallengeCount is None or outgoingChallengeCount == 0:
+            return False
+        else:
+            return True
+
+    # Returns true if the player is currently being challenged by at least one other player
+    def isCurrentlyBeingChallenged(self, discordID, ladder = ''):
+        if ladder == '':
+            ladder = self.getConfig('current_ladder')
+
+        self.cursor.execute("SELECT COUNT(*) FROM Challenges LEFT JOIN Players ON Challenges.OpponentID=Players.PlayerID WHERE DiscordID=%s AND Ladder=%s AND State='pending';", (discordID, ladder,))
+        result = self.cursor.fetchall()
+
+        incomingChallengeCount = result[0][0]
+
+        if incomingChallengeCount is None or incomingChallengeCount == 0:
+            return False
+        else:
+            return True
+
+    
 
 ##### CONFIGURATION #####
 

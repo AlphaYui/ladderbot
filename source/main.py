@@ -14,7 +14,8 @@ except:
     sys.exit('Invalid Discord token file or data')
 
 # Initializes Bot
-bot = commands.Bot(command_prefix='.1v1')
+prefix = '.1v1'
+bot = commands.Bot(command_prefix=prefix)
 
 
 # Initializes database
@@ -80,24 +81,82 @@ async def signup(ctx):
 
 # Used by users to challenge other users in the ladder
 @bot.command()
-async def challenge(ctx, opponent):
-    # 1. Check if user has ladder role to use this command
-    if not await isLadderPlayer(ctx):
+async def challenge(ctx, opponent: commands.MemberConverter):
+    # 1. Checks if posted in general channel
+    if not db.isGeneralChannel(ctx.channel):
         return
 
-    # 2. Check if user can challenge other user:
-    # 2a. Is user in timeout?
-    # 2b. Is challenged user in universal timeout?
-    # 2c. Is user already challenging someone?
-    # 2d. Is user already being challenged?
-    # 2e. Is opponent already challenging someone?
-    # 2f. Is opponent already being challenged by someone?
-    # 2g. Is the other player in a rank or tier that allows the challenge?
+    # 2. Check if user has ladder role to use this command
+    if not await isLadderPlayer(ctx):
+        return
+        
+    ladder = db.getConfig('current_ladder')
+
+    # 3. Check if user can challenge other user:
+    # 2a. Is user trying to challenge themself?
+    isChallengingThemself = (ctx.author.id == opponent.id)
+
+    if isChallengingThemself:
+        await ctx.send("You can't challenge yourself!")
+
+    # 2b. Is challenged user even signed up?
+    isOpponentSignedUp = db.isPlayerSignedUp(opponent.id, ladder)
+
+    if not isOpponentSignedUp:
+        await ctx.send(f"{opponent.name} isn't signed up for the ladder. Please only challenge players that already play in the ladder!")
+
+    # 2c. Is user in timeout?
+    hasChallengerTimeout = db.hasChallengeTimeout(ctx.author.id, ladder)
+
+    if hasChallengerTimeout:
+        await ctx.send("Slow down! You're still on cooldown from your last game, so that other players can challenge you.")
+
+    # 2d. Is the other player in a rank or tier that allows the challenge?
+    isChallengePermitted = db.canChallenge(ctx.author.id, opponent.id, ladder)
+
+    if not isChallengePermitted:
+        await ctx.send(f"You can't challenge {opponent.name}! They must be either in the tier above yours, or in the same tier but higher ranked.")
+
+    # 2e. Is user already challenging someone?
+    isAlreadyChallengingSomeone = db.isCurrentlyChallenging(ctx.author.id, ladder)
+
+    if isAlreadyChallengingSomeone:
+        await ctx.send(f"You can't challenge more than one person at a time! Use '{prefix}challenge' to get info about your active challenge.")
+
+    # 2f. Is user already being challenged?
+    isAlreadyBeingChallenged = db.isCurrentlyBeingChallenged(ctx.author.id, ladder)
+
+    if isAlreadyBeingChallenged:
+        await ctx.send(f"You can't challenge someone else while you're being challenged! Use '{prefix}challenge' to get info about your active challenge.")
+
+    # 2g. Is challenged user in universal timeout?
+    hasOpponentChallengeProtection = db.hasChallengeProtection(opponent.id, ladder)
+
+    if hasOpponentChallengeProtection:
+        await ctx.send(f"{opponent.name} is currently in timeout. You can challenge them once they're back!")
+
+    # 2h. Is opponent already challenging someone?
+    isOpponentAlreadyChallengingSomeone = db.isCurrentlyChallenging(opponent.id, ladder)
+
+    if isOpponentAlreadyChallengingSomeone:
+        await ctx.send(f"{opponent.name} is already currently challenging someone themself! You can challenge them after they completed their challenge.")
+
+    # 2i. Is opponent already being challenged by someone?
+    isOpponentAlreadyBeingChallenged = db.isCurrentlyBeingChallenged(opponent.id, ladder)
+
+    if isOpponentAlreadyBeingChallenged:
+        await ctx.send(f"{opponent.name} has already been challenged by someone else! You'll have to wait until they finished their challenge until you can challenge them again.")
+
+    # 2j. Did user already challenge this player last game?
+    # TODO
+
+    # 2k. Did opponent already challenge user last game?
+    # TODO
+
     # 3a. No: Display why and quit
     # 3b. Yes: Continue
     # 4. Add challenge to database
     # 5. Display success message
-    await ctx.send('challenge')
 
 # Used by users or admins to cancel challenges
 @bot.command()
