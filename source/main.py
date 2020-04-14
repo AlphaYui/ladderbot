@@ -22,27 +22,69 @@ db = ladderdb.LadderDatabase('MySQL.token')
 print('Successfully connected to database')
 
 
-# Bot commands
+### HELP FUNCTIONS ###
+async def hasAdminRights(ctx: commands.Context, bot: commands.Bot):
+    if not db.isLadderAdmin(ctx.author) and not await bot.is_owner(ctx.author):
+        await ctx.send("You must be an admin to use this command!")
+        return False
+    else:
+        return True
+
+async def isLadderPlayer(ctx: commands.Context):
+    if not db.isLadderPlayer(ctx.author):
+        await ctx.send("You must participate in the 1v1 ladder to use this command. Sign up using .1v1signup!")
+        return False
+    else:
+        return True
+
+### BOT COMMANDS ###
 @bot.command()
 async def ping(ctx):
-    await ctx.send('pong')
+    
+    if await bot.is_owner(ctx.author):
+        await ctx.send('Owner')
+    elif db.isLadderAdmin(ctx.author):
+        await ctx.send('Admin')
+    elif db.isLadderPlayer(ctx.author):
+        await ctx.send('Player')
+    else:
+        await ctx.send('pong')
 
 # Used by users to enter the ladder
 @bot.command()
 async def signup(ctx):
-    # 1. Check if user already is in the ladder
+    # 1. Check if posted in general channel
+    if not db.isGeneralChannel(ctx.channel):
+        return
+
+    # 2. Check if user already is in the ladder
+    alreadySignedUp = db.isPlayerSignedUp(ctx.author.id)
+
     # 2a. Yes: Display message and quit
+    if alreadySignedUp:
+        await ctx.send("You're already signed up!")
+        return
+
     # 2b. No: Continue
-    # 3. Add user to database
+
+    # 3. Add user to database and gives them a rank
+    db.addPlayer(ctx.author.id)
+
     # 4. Give user ladder role
-    # 5. Update ranking message
-    # 6. Display success message
-    await ctx.send('signup')
+    ladderRole = discord.utils.get(ctx.guild.roles, id = int(db.getConfig('ladder_role')))
+    await ctx.author.add_roles(ladderRole, reason = 'Signed up for 1v1 ladder')
+
+    # 5. Display success message
+    await ctx.send("Welcome to the 1v1 ladder!")
+
 
 # Used by users to challenge other users in the ladder
 @bot.command()
 async def challenge(ctx, opponent):
-    # 1. Check if user has ladder/admin role to use this command
+    # 1. Check if user has ladder role to use this command
+    if not await isLadderPlayer(ctx):
+        return
+
     # 2. Check if user can challenge other user:
     # 2a. Is user in timeout?
     # 2b. Is challenged user in universal timeout?
@@ -94,20 +136,41 @@ async def clear(ctx):
     # 4. Display success message: @ users whose challenges got cancelled by this
     await ctx.send('clear')
 
+
 # Used by admins to kick players from the ladder
 @bot.command()
-async def kick(ctx, player):
+async def kick(ctx, player: commands.MemberConverter, reason = ''):
     # 1. Check if user has admin role
+    if not await hasAdminRights(ctx, bot):
+        return
+
     # 2. Check if target is part of the ladder
-    # 3. Reset target's win/loss-stats
-    # 4. Mark target entry as 'inactive' in database
-    # 5. Remove target's ladder role
-    # 6. Display success message
-    await ctx.send('kick')
+    if not db.isLadderPlayer(player):
+        await ctx.send("Player isn't participating in the 1v1 ladder!")
+        return
+
+    # 3. Remove target's ladder role
+    ladderRole = discord.utils.get(ctx.guild.roles, id = int(db.getConfig('ladder_role')))
+    kickReason = f"Kicked from the ladder by {ctx.author.name}"
+    if not reason == '':
+        kickReason += f". Reason: '{reason}'"
+    await ctx.author.remove_roles(ladderRole, reason = kickReason)
+
+    # 4. Remove player from database
+    db.kickPlayer(player.id)
+
+    # 5. Display success message
+    kickMessage = f"{player.name} was kicked from the ladder."
+    if not reason == '':
+        kickMessage += f" Reason: '{reason}'"
+    await ctx.send(kickMessage)
+    await ctx.message.delete()
+
 
 # Used by admins to time out users from the ladder
 @bot.command()
 async def timeout(ctx, player, duration):
+    # TODO
     # 1. Check if user has admin role
     # 2. Check if target is part of the ladder
     # 3. Add timeout to the database for outgoing and incoming challenges
@@ -116,13 +179,45 @@ async def timeout(ctx, player, duration):
 
 # Used by admins to configure the bot
 @bot.command()
-async def config(ctx, name, value):
+async def config(ctx, name, value = ''):
     # 1. Check if user has admin role
-    # 2. Check if configuration exists
-    # 3. Check if value is valid
-    # 4. Update value of the configuration
-    # 5. Display success message
-    await ctx.send('config')
+    if not await hasAdminRights(ctx, bot):
+        return
+
+    # 2. Check if value should be loaded or set
+    # 2a. Load and display value
+    if value == '':
+        try:
+            value = db.getConfig(name)
+        except:
+            await ctx.send(f"Invalid configuration name '{name}'!")
+            return
+        
+        if name == 'admin_role' or name == 'ladder_role':
+            value = f"<@&{value}>"
+        
+        if name == 'general_channel' or name == 'ranking_channel':
+            value = f"<#{value}>"
+
+        await ctx.send(f"'{name}' = '{value}'")
+        return
+
+    # 2b. Update value of the configuration
+    else:
+        # Convert value to required datatype
+        if value.startswith('<@&'):
+            value = value[3:-1]
+        if value.startswith('<#'):
+            value = value[2:-1]
+
+        try:
+            db.setConfig(name, value)
+        except:
+            await ctx.send(f"Invalid configuration name '{name}'!")
+            return
+
+    # 3. Display success message
+    await ctx.send(f"Set '{name}' to '{value}'!")
 
 # Runs bot
 print('Starting bot...')
