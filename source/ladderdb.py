@@ -62,6 +62,7 @@ class LadderDatabase:
                 Losses INT DEFAULT 0,
                 Tier INT,
                 Rank INT,
+                Titles INT DEFAULT 0,
                 Cancellations INT DEFAULT 0,
                 OutgoingTimeoutUntil DATETIME,
                 IngoingTimeoutUntil DATETIME,
@@ -79,7 +80,8 @@ class LadderDatabase:
         newPlayerRank = lowestRank + 1
         newPlayerTier = self.convertToTier(newPlayerRank)
 
-        self.cursor.execute("INSERT INTO Players (DiscordID, Ladder, Tier, Rank) VALUES (%s, %s, %s, %s);", (discordID, ladder, newPlayerTier, newPlayerRank))
+        self.cursor.execute("INSERT INTO Players (DiscordID, Ladder, Tier, Rank, OutgoingTimeoutUntil, IngoingTimeoutUntil) VALUES (%s, %s, %s, %s, NOW(), NOW());", 
+        (discordID, ladder, newPlayerTier, newPlayerRank))
         self.database.commit()
 
     # Deletes player
@@ -170,11 +172,71 @@ class LadderDatabase:
 
         return timeoutEnd > currentTime
 
+    # Returns if Player 1 is allowed to challenge Player 2
+    def canChallenge(self, discordID1, discordID2, ladder = ''):
+        if ladder == '':
+            ladder = self.getConfig('current_ladder')
+
+        challengerInfo = self.getPlayerInfo(discordID1, ladder)
+        opponentInfo = self.getPlayerInfo(discordID2, ladder)
+
+        # The #1 player can only challenge tier 2
+        if challengerInfo.rank == 1:
+            return opponentInfo.tier == 2
+
+        # Others can challenge all players below them
+        if challengerInfo.rank < opponentInfo.rank:
+            return True
+
+        # You can't challenge players more than one tier above you
+        if challengerInfo.tier > opponentInfo.tier + 1:
+            return False
+
+        # You can't challenge player more than 3 ranks above you
+        if challengerInfo.rank > opponentInfo.rank + 3:
+            return False
+
+        # In all other cases, you can challenge!
+        return True
+
+    # Returns a list of all higher ranked players that a player could challenge
+    def getPossibleChallenges(self, discordID, ladder = ''):
+        if ladder == '':
+            ladder = self.getConfig('current_ladder')
+
+        challenges = []
+        playerInfo = self.getPlayerInfo(discordID)
+        result = {}
+
+        # Gets all possible challengers based on rank and tier
+        if playerInfo.rank == 1:
+            self.cursor.execute("SELECT DiscordID FROM Players WHERE Ladder=%s AND Tier=2 AND IngoingTimeoutUntil<NOW();", (ladder,))
+            result = self.cursor.fetchall()
+        else:
+            self.cursor.execute("SELECT DiscordID FROM Players WHERE Ladder=%s AND NOT DiscordID=%s AND Rank<%s AND Rank>%s AND Tier>%s AND IngoingTimeoutUntil<NOW();",
+            (ladder, discordID, playerInfo.rank, playerInfo.rank - 4, playerInfo.tier - 2))
+            result = self.cursor.fetchall()
+
+        if len(result) == 0 or result[0][0] is None:
+            return []
+
+        # Filters out all challengers that are already in a match
+        for row in result:
+            playerDiscordID = row[0]
+            activeChallenge = self.getActiveChallenge(playerDiscordID, ladder)
+
+            if activeChallenge is None:
+                challenges += [playerDiscordID]
+        
+        return challenges
+
+
+    # Deprecated
     # Return true if player 1 is allowed to challenge player 2 with their current ranking
     # This is the case if player 1 is either:
     # a) one tier below player 2
     # b) in the same tier as player 2, but has a lower rank
-    def canChallenge(self, discordID1, discordID2, ladder = ''):
+    def canChallengeOld(self, discordID1, discordID2, ladder = ''):
         if ladder == '':
             ladder = self.getConfig('current_ladder')
 
@@ -204,16 +266,16 @@ class LadderDatabase:
         self.cursor.execute("SELECT OutgoingTimeoutUntil, IngoingTimeoutUntil FROM Players WHERE DiscordID=%s AND Ladder=%s;", (discordID, ladder,))
         result = self.cursor.fetchall()
 
-        if len(result) == 0 or result[0][0] is None:
+        if len(result) == 0:
             return None
         else:
             outgoingTimeout = result[0][0]
             incomingTimeout = result[0][1]
             currentTime = datetime.datetime.now()
 
-            if outgoingTimeout < currentTime:
+            if outgoingTimeout is not None and outgoingTimeout < currentTime:
                 outgoingTimeout = None
-            if incomingTimeout < currentTime:
+            if incomingTimeout is not None and incomingTimeout < currentTime:
                 incomingTimeout = None
 
             return TimeoutInfo(outgoingTimeout, incomingTimeout)
@@ -242,14 +304,14 @@ class LadderDatabase:
         if ladder == '':
             ladder = self.getConfig('current_ladder')
 
-        self.cursor.execute("SELECT PlayerID, Rank, Tier, Wins, Losses FROM Players WHERE DiscordID=%s AND Ladder=%s;", (discordID, ladder,))
+        self.cursor.execute("SELECT PlayerID, Rank, Tier, Wins, Losses, Titles FROM Players WHERE DiscordID=%s AND Ladder=%s;", (discordID, ladder,))
         result = self.cursor.fetchall()
 
         if len(result) == 0 or result[0][0] is None:
             return None
         else:
             row = result[0]
-            return PlayerInfo(row[0], discordID, row[1], row[2], row[3], row[4])
+            return PlayerInfo(row[0], discordID, row[1], row[2], row[3], row[4], row[5])
 
     # Prohibits the given player from issueing challenges for the given number of days
     def giveChallengeCooldown(self, discordID, days, ladder = ''):
@@ -271,13 +333,13 @@ class LadderDatabase:
         if ladder == '':
             ladder = self.getConfig('current_ladder')
 
-        self.cursor.execute("SELECT PlayerID, DiscordID, Rank, Tier, Wins, Losses FROM Players WHERE Ladder=%s ORDER BY Rank LIMIT 100;", (ladder,))
+        self.cursor.execute("SELECT PlayerID, DiscordID, Rank, Tier, Wins, Losses, Titles FROM Players WHERE Ladder=%s ORDER BY Rank LIMIT 100;", (ladder,))
         result = self.cursor.fetchall()
 
         players = []
 
         for row in result:
-            players += [PlayerInfo(row[0], row[1], row[2], row[3], row[4], row[5])]
+            players += [PlayerInfo(row[0], row[1], row[2], row[3], row[4], row[5], row[6])]
         
         return players
 
@@ -320,45 +382,13 @@ class LadderDatabase:
 
         self.database.commit()
 
-
-    # Returns true if the player is currently challenging at least one other player
-    def isCurrentlyChallenging(self, discordID, ladder = ''):
-        if ladder == '':
-            ladder = self.getConfig('current_ladder')
-
-        self.cursor.execute("SELECT COUNT(*) FROM Challenges JOIN Players ON Challenges.IssuedByID=Players.PlayerID WHERE DiscordID=%s AND Ladder=%s AND State='pending';", (discordID, ladder,))
-        result = self.cursor.fetchall()
-
-        outgoingChallengeCount = result[0][0]
-
-        if outgoingChallengeCount is None or outgoingChallengeCount == 0:
-            return False
-        else:
-            return True
-
-    # Returns true if the player is currently being challenged by at least one other player
-    def isCurrentlyBeingChallenged(self, discordID, ladder = ''):
-        if ladder == '':
-            ladder = self.getConfig('current_ladder')
-
-        self.cursor.execute("SELECT COUNT(*) FROM Challenges JOIN Players ON Challenges.OpponentID=Players.PlayerID WHERE DiscordID=%s AND Ladder=%s AND State='pending';", (discordID, ladder,))
-        result = self.cursor.fetchall()
-
-        incomingChallengeCount = result[0][0]
-
-        if incomingChallengeCount is None or incomingChallengeCount == 0:
-            return False
-        else:
-            return True
-
-
     # Returns the Discord ID of the member the player with the given Discord ID played against last
     def getLastPlayedChallenge(self, discordID, ladder = ''):
         if ladder == '':
             ladder = self.getConfig('current_ladder')
 
         # Gets the Discord ID of the player who was challenged last
-        self.cursor.execute("""SELECT p1.DiscordID, p2.DiscordID FROM Challenges c 
+        self.cursor.execute("""SELECT c.ChallengeID, p1.DiscordID, p2.DiscordID, c.Time, c.Won FROM Challenges c 
         JOIN Players p1 ON c.IssuedByID=p1.PlayerID 
         JOIN Players p2 ON c.OpponentID=p2.PlayerID 
         WHERE (p1.DiscordID=%s OR p2.DiscordID=%s) AND p1.Ladder=%s AND p2.Ladder=%s AND c.State='played' 
@@ -367,11 +397,10 @@ class LadderDatabase:
         result = self.cursor.fetchall()
 
         if len(result) == 0 or result[0][0] is None or result[0][1] is None:
-            return 0
-        elif result[0][0] == discordID:
-            return result[0][1]
+            return None
         else:
-            return result[0][0]
+            row = result[0]
+            return ChallengeInfo(row[0], row[1], row[2], row[3], row[4])
 
     # Return information about the currently active challenge of the given player
     def getActiveChallenge(self, discordID, ladder = ''):
@@ -434,9 +463,75 @@ class LadderDatabase:
         challengerInfo = self.getPlayerInfo(challengeInfo.challenger)
         opponentInfo = self.getPlayerInfo(challengeInfo.opponent)
 
+        # Updates Win/Loss/Titles and switches rank&tier if the winner is lower ranked
         if won:
             challengerInfo.wins += 1
             opponentInfo.losses += 1
+
+            if challengerInfo.rank > opponentInfo.rank:
+                newRank = opponentInfo.rank
+                newTier = opponentInfo.tier
+
+                opponentInfo.rank = challengerInfo.rank
+                opponentInfo.tier = challengerInfo.tier
+
+                challengerInfo.rank = newRank
+                challengerInfo.tier = newTier
+
+            if challengerInfo.rank == 1:
+                challengerInfo.titles += 1
+        else:
+            challengerInfo.losses += 1
+            opponentInfo.wins += 1
+                
+            if opponentInfo.rank > challengerInfo.rank:
+                newRank = opponentInfo.rank
+                newTier = opponentInfo.tier
+
+                opponentInfo.rank = challengerInfo.rank
+                opponentInfo.tier = challengerInfo.tier
+
+                challengerInfo.rank = newRank
+                challengerInfo.tier = newTier
+
+            if opponentInfo.rank == 1:
+                opponentInfo.titles += 1
+
+        # Pushes changes to database
+        self.cursor.execute("UPDATE Players SET Rank=%s, Tier=%s, Wins=%s, Losses=%s, Titles=%s WHERE PlayerID=%s;", 
+        (challengerInfo.rank, challengerInfo.tier, challengerInfo.wins, challengerInfo.losses, challengerInfo.titles, challengerInfo.playerID,))
+
+        self.cursor.execute("UPDATE Players SET Rank=%s, Tier=%s, Wins=%s, Losses=%s, Titles=%s WHERE PlayerID=%s;", 
+        (opponentInfo.rank, opponentInfo.tier, opponentInfo.wins, opponentInfo.losses, opponentInfo.titles, opponentInfo.playerID,))
+
+        self.database.commit()
+
+
+    # Undos the latest result report for the given player
+    def reverseReport(self, discordID, challengeInfo, ladder = ''):
+        if ladder == '':
+            ladder = self.getConfig('current_ladder')
+
+        # Updates entry for the challenge in the database
+        self.cursor.execute("UPDATE Challenges SET State='pending', Won=NULL WHERE ChallengeID=%s;", (challengeInfo.challengeID,))
+
+        challengerInfo = self.getPlayerInfo(challengeInfo.challenger)
+        opponentInfo = self.getPlayerInfo(challengeInfo.opponent)
+
+        # Reverses changes to the win/loss/titles and switches the rank/tiers
+        if challengeInfo.won is not None:
+            if challengeInfo.won:
+                challengerInfo.wins -= 1
+                opponentInfo.losses -= 1
+
+                if challengerInfo.rank == 1:
+                    challengerInfo.titles -= 1
+            else:
+                challengerInfo.losses -= 1
+                opponentInfo.wins -= 1
+
+                if opponentInfo.rank == 1:
+                    opponentInfo.titles -= 1
 
             newRank = opponentInfo.rank
             newTier = opponentInfo.tier
@@ -446,17 +541,16 @@ class LadderDatabase:
 
             challengerInfo.rank = newRank
             challengerInfo.tier = newTier
-        else:
-            challengerInfo.losses += 1
-            opponentInfo.wins += 1
+                
+            # Pushes changes to database
+            self.cursor.execute("UPDATE Players SET Rank=%s, Tier=%s, Wins=%s, Losses=%s, Titles=%s WHERE PlayerID=%s;", 
+            (challengerInfo.rank, challengerInfo.tier, challengerInfo.wins, challengerInfo.losses, challengerInfo.titles, challengerInfo.playerID,))
 
-        self.cursor.execute("UPDATE Players SET Rank=%s, Tier=%s, Wins=%s, Losses=%s WHERE PlayerID=%s;", 
-        (challengerInfo.rank, challengerInfo.tier, challengerInfo.wins, challengerInfo.losses, challengerInfo.playerID,))
-
-        self.cursor.execute("UPDATE Players SET Rank=%s, Tier=%s, Wins=%s, Losses=%s WHERE PlayerID=%s;", 
-        (opponentInfo.rank, opponentInfo.tier, opponentInfo.wins, opponentInfo.losses, opponentInfo.playerID,))
+            self.cursor.execute("UPDATE Players SET Rank=%s, Tier=%s, Wins=%s, Losses=%s, Titles=%s WHERE PlayerID=%s;", 
+            (opponentInfo.rank, opponentInfo.tier, opponentInfo.wins, opponentInfo.losses, opponentInfo.titles, opponentInfo.playerID,))
 
         self.database.commit()
+
     
     # Marks all overdue challenges as timed out
     def cancelAllOverdueChallenges(self, ladder = ''):
@@ -563,11 +657,12 @@ class LadderDatabase:
 
 
 class ChallengeInfo:
-    def __init__(self, challengeID, challengerDiscordID, opponentDiscordID, deadline: datetime.datetime):
+    def __init__(self, challengeID, challengerDiscordID, opponentDiscordID, deadline: datetime.datetime, won = None):
         self.challengeID = challengeID
         self.challenger = challengerDiscordID
         self.opponent = opponentDiscordID
         self.deadline = deadline
+        self.won = won
 
 class TimeoutInfo:
     def __init__(self, challengeTimeoutDeadline, protectionDeadline):
@@ -575,13 +670,14 @@ class TimeoutInfo:
         self.incomingTimeout = protectionDeadline
 
 class PlayerInfo:
-    def __init__(self, playerID, discordID, rank, tier, wins, losses):
+    def __init__(self, playerID, discordID, rank, tier, wins, losses, titles):
         self.playerID = playerID
         self.discordID = discordID
         self.rank = rank
         self.tier = tier
         self.wins = wins
         self.losses = losses
+        self.titles = titles
 
 class CancelInfo:
     def __init__(self, challenger, challengerCancels, opponent, opponentCancels):
