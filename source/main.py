@@ -288,13 +288,13 @@ class AdminCommands(commands.Cog, name = "Admin Commands"):
                     await kickPlayer(ctx, challenger, "1v1 bot", f"Exceeded maximum amount of cancellations ({maxCancels})")
                     message += f"{challenger.mention} has been kicked from the ladder for exceeding the allowed maximum number of cancellations ({maxCancels}).\n"
                 else:
-                    message += f"{challenger.mention} has {maxCancels - game.challengerCancels} out of {maxCancels} cancellations remaining.\n"
+                    message += f"{challenger.mention} now has {game.challengerCancels} out of {maxCancels} cancellation strikes.\n"
 
                 if game.opponentCancels > maxCancels:
                     await kickPlayer(ctx, opponent, "1v1 bot", f"Exceeded maximum amount of cancellations ({maxCancels})")
                     message += f"{opponent.mention} has been kicked from the ladder for exceeding the allowed maximum number of cancellations ({maxCancels}).\n"
                 else:
-                    message += f"{opponent.mention} has {maxCancels - game.opponentCancels} out of {maxCancels} cancellations remaining.\n"
+                    message += f"{opponent.mention} now has {game.opponentCancels} out of {maxCancels} cancellation strikes.\n"
 
 
         # 4. Display success message: @ users whose challenges got cancelled by this
@@ -331,7 +331,7 @@ class AdminCommands(commands.Cog, name = "Admin Commands"):
 
     # Used by admins to give back cancellations to a specific player
     @commands.command()
-    async def strikes(self, ctx, player:commands.MemberConverter, change = 0: int):
+    async def strikes(self, ctx, player:commands.MemberConverter, change:int = 0):
         """Gives cancellation strikes to a player, or takes them away.
         If no strike number is given, it instead displays the number of strikes a player already has.
         A positive number gives a player additional strikes, kicking them if they exceed the maximum number.
@@ -354,22 +354,22 @@ class AdminCommands(commands.Cog, name = "Admin Commands"):
             strikes = db.updateCancelCounter(player.id, change)
 
             # 4. Kick player if necessary
-            maxCancels = int(db.getConfig('num_cancels')
-            if strikes > maxCancels):
-                kickPlayer(ctx, player, '1v1 bot')
+            maxCancels = int(db.getConfig('num_cancels'))
+            if strikes > maxCancels:
+                await kickPlayer(ctx, player, '1v1 bot')
                 ctx.send(f"{player.name} has been kicked from the ladder for exceeding the allowed maximum number of cancellations ({maxCancels}).")
                 return
-            else if change > 0:
-                ctx.send(f"{change} cancellation strikes given to {player.name}. They have now {maxCancels-strikes} out of {maxCancels} remaining.")
+            elif change > 0:
+                await ctx.send(f"{change} cancellation strikes given to {player.name}. They have now {strikes} out of {maxCancels} strikes.")
                 return
             else:
-                ctx.send(f"{-chage} cancellation strikes taken away from {player.name}. They now have {maxCancels-strikes} out of {maxCancels} remaining.")
+                await ctx.send(f"{-change} cancellation strikes taken away from {player.name}. They now have {strikes} out of {maxCancels} strikes.")
         else:
             # 5. Get number of cancellation strikes a player has
             strikes = db.updateCancelCounter(player.id, 0)
             maxCancels = int(db.getConfig('num_cancels'))
 
-            ctx.send(f"{player.name} has {maxCancels-strikes} out of {maxCancels} remaining.")
+            await ctx.send(f"{player.name} has {strikes} out of {maxCancels} cancellation strikes.")
 
 
     # Used by admins to time out users from the ladder
@@ -723,7 +723,7 @@ class PlayerCommands(commands.Cog, name = "Player Commands"):
             
             message += f"\n{player.mention} has been kicked from the ladder for exceeding the allowed number of cancellations ({maxCancels})."
         else:
-            message += f"\nIt was cancelled by {player.mention} who has {maxCancels - cancels} out of {maxCancels} cancellations remaining."
+            message += f"\nIt was cancelled by {player.mention} who now has {cancels} out of {maxCancels} cancellation strikes."
 
         # 8. Display success message, @ both users
         await ctx.send(message)
