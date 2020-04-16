@@ -343,6 +343,30 @@ class LadderDatabase:
         
         return players
 
+    # Randomly shuffles all ladder participants so that ranks are random
+    def shuffleLadder(self, ladder = ''):
+        if ladder == '':
+            ladder = self.getConfig('current_ladder')
+
+        # Gets a randomized list of all players
+        self.cursor.execute("SELECT PlayerID FROM Players WHERE Ladder=%s ORDER BY RAND();", (ladder,))
+        result = self.cursor.fetchall()
+
+        # Assigns new rank to every player
+        rank = 1
+        tier = 1
+        for row in result:
+            if row[0] is None:
+                break
+            
+            playerID = row[0]
+            tier = self.convertToTier(rank)
+            self.cursor.execute("UPDATE Players SET Rank=%s, Tier=%s WHERE PlayerID=%s;", (rank, tier, playerID,))
+            
+            rank += 1
+
+        self.database.commit()
+
 
 ##### CHALLENGES #####
 
@@ -605,7 +629,8 @@ class LadderDatabase:
             ('num_cancels', 3),
             ('outgoing_cooldown', 1),
             ('challenge_protection', 1),
-            ('ranking_message', 0)
+            ('ranking_message', 0),
+            ('signup_only', 0)
             ;""")
             self.database.commit()
 
