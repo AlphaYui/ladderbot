@@ -281,7 +281,7 @@ class LadderDatabase:
             return TimeoutInfo(outgoingTimeout, incomingTimeout)
 
     # Increments the number of cancellations a player used
-    def incrementCancelCounter(self, discordID, ladder = ''):
+    def updateCancelCounter(self, discordID, change: int, ladder = ''):
         if ladder == '':
             ladder = self.getConfig('current_ladder')
 
@@ -291,11 +291,16 @@ class LadderDatabase:
         if len(result) == 0 or result[0][0] is None:
             return 0
         
-        cancellations = result[0][0] + 1
-        playerID = result[0][1]
+        cancellations = result[0][0] + change
 
-        self.cursor.execute("""UPDATE Players SET Cancellations=%s WHERE PlayerID=%s;""", (cancellations, playerID,))
-        self.database.commit()
+        if cancellations < 0:
+            cancellations = 0
+
+        if not change == 0:
+            playerID = result[0][1]
+
+            self.cursor.execute("""UPDATE Players SET Cancellations=%s WHERE PlayerID=%s;""", (cancellations, playerID,))
+            self.database.commit()
 
         return cancellations
 
@@ -600,8 +605,8 @@ class LadderDatabase:
 
             self.cursor.execute("UPDATE Challenges SET State='timeout' WHERE ChallengeID=%s", (challengeID,))
 
-            challengerCancels = self.incrementCancelCounter(challengerID, ladder)
-            opponentCancels = self.incrementCancelCounter(opponentID, ladder)
+            challengerCancels = self.updateCancelCounter(challengerID, 1, ladder)
+            opponentCancels = self.updateCancelCounter(opponentID, 1, ladder)
 
             affectedPlayers += [CancelInfo(challengerID, challengerCancels, opponentID, opponentCancels)]
         

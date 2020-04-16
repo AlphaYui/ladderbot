@@ -203,15 +203,11 @@ class AdminCommands(commands.Cog, name = "Admin Commands"):
 
         Example: .1v1ping"""
 
-        # 1. Checks if posted in general channel
-        if not db.isGeneralChannel(ctx.channel):
-            return
-
-        # 2. Checks for admin permissions
+        # 1. Checks for admin permissions
         if not await hasAdminRights(ctx, bot):
             return
 
-        # 3. Sends pong and updates ranking
+        # 2. Sends pong and updates ranking
         await ctx.send('pong')
         await updateRankingMessage(ctx)
 
@@ -331,6 +327,49 @@ class AdminCommands(commands.Cog, name = "Admin Commands"):
             kickMessage += f" Reason: '{reason}'"
         await ctx.send(kickMessage)
         await ctx.message.delete()
+
+
+    # Used by admins to give back cancellations to a specific player
+    @commands.command()
+    async def strikes(self, ctx, player:commands.MemberConverter, change = 0: int):
+        """Gives cancellation strikes to a player, or takes them away.
+        If no strike number is given, it instead displays the number of strikes a player already has.
+        A positive number gives a player additional strikes, kicking them if they exceed the maximum number.
+        A negative number takes strikes away, down to a minimum of zero.
+
+        Example: .1v1strikes @Player -1"""
+
+        # 1. Check if user has admin rights
+        if not await hasAdminRights(ctx, bot):
+            return
+
+        # 2. Check if target is part of the ladder
+        if not db.isLadderPlayer(player):
+            await ctx.send(f"{player.name} isn't signed up for the ladder and therefore can't receive any strikes!")
+            return
+        
+        
+        if not change == 0:
+            # 3. Update number of strikes in database
+            strikes = db.updateCancelCounter(player.id, change)
+
+            # 4. Kick player if necessary
+            maxCancels = int(db.getConfig('num_cancels')
+            if strikes > maxCancels):
+                kickPlayer(ctx, player, '1v1 bot')
+                ctx.send(f"{player.name} has been kicked from the ladder for exceeding the allowed maximum number of cancellations ({maxCancels}).")
+                return
+            else if change > 0:
+                ctx.send(f"{change} cancellation strikes given to {player.name}. They have now {maxCancels-strikes} out of {maxCancels} remaining.")
+                return
+            else:
+                ctx.send(f"{-chage} cancellation strikes taken away from {player.name}. They now have {maxCancels-strikes} out of {maxCancels} remaining.")
+        else:
+            # 5. Get number of cancellation strikes a player has
+            strikes = db.updateCancelCounter(player.id, 0)
+            maxCancels = int(db.getConfig('num_cancels'))
+
+            ctx.send(f"{player.name} has {maxCancels-strikes} out of {maxCancels} remaining.")
 
 
     # Used by admins to time out users from the ladder
@@ -671,7 +710,7 @@ class PlayerCommands(commands.Cog, name = "Player Commands"):
         db.cancelActiveChallenge(player.id, ladder)
 
         # 6. Update number of cancellations for the player
-        cancels = db.incrementCancelCounter(player.id, ladder)
+        cancels = db.updateCancelCounter(player.id, 1, ladder)
 
         # 7. Kick the player if the number of cancellations exceeds the maximum permitted number
         challenger = ctx.guild.get_member(activeChallenge.challenger)
