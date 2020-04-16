@@ -362,7 +362,7 @@ class LadderDatabase:
             playerID = row[0]
             tier = self.convertToTier(rank)
             self.cursor.execute("UPDATE Players SET Rank=%s, Tier=%s WHERE PlayerID=%s;", (rank, tier, playerID,))
-            
+
             rank += 1
 
         self.database.commit()
@@ -386,7 +386,7 @@ class LadderDatabase:
                 OpponentID INT NOT NULL,
                 Time DATETIME DEFAULT NOW(),
                 State ENUM('pending', 'played', 'denied', 'cancelled', 'timeout') DEFAULT 'pending',
-                Won BIT,
+                Won TINYINT,
                 PRIMARY KEY (ChallengeID)
             );""")
 
@@ -482,7 +482,10 @@ class LadderDatabase:
             ladder = self.getConfig('current_ladder')
         
         # Updates entry for the challenge in the database
-        self.cursor.execute("UPDATE Challenges SET State='played', Won=%s WHERE ChallengeID=%s;", (won, challengeInfo.challengeID,))
+        wonNum = 0
+        if won:
+            wonNum = 1
+        self.cursor.execute("UPDATE Challenges SET State='played', Won=%s WHERE ChallengeID=%s;", (wonNum, challengeInfo.challengeID,))
 
         challengerInfo = self.getPlayerInfo(challengeInfo.challenger)
         opponentInfo = self.getPlayerInfo(challengeInfo.opponent)
@@ -544,7 +547,7 @@ class LadderDatabase:
 
         # Reverses changes to the win/loss/titles and switches the rank/tiers
         if challengeInfo.won is not None:
-            if challengeInfo.won:
+            if challengeInfo.won == 1:
                 challengerInfo.wins -= 1
                 opponentInfo.losses -= 1
 

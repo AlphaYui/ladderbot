@@ -434,7 +434,7 @@ async def report(ctx, result, player = None):
             return
 
     # 3. Checks if signup-only mode is active
-    if isOnlySignupAllowed(ctx):
+    if await isOnlySignupAllowed(ctx):
         return
 
     # 4. Check if user has a challenge that can be reported
