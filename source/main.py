@@ -190,469 +190,580 @@ async def getRankingMessage(ctx):
     except discord.errors.NotFound:
         return None
 
+
 ### BOT COMMANDS ###
-@bot.command()
-async def ping(ctx):
-    # 1. Checks if posted in general channel
-    if not db.isGeneralChannel(ctx.channel):
-        return
 
-    # 2. Checks for admin permissions
-    if not await hasAdminRights(ctx, bot):
-        return
+class AdminCommands(commands.Cog, name = "Admin Commands"):
+    """Commands that are reserved for ladder admins."""
 
-    # 3. Sends pong and updates ranking
-    await ctx.send('pong')
-    await updateRankingMessage(ctx)
+    @commands.command()
+    async def ping(self, ctx):
+        """Responds with pong if the bot is online.
+        Updates the ranking message for the current ladder.
 
-# Used by users to enter the ladder
-@bot.command()
-async def signup(ctx):
-    # 1. Check if posted in general channel
-    if not db.isGeneralChannel(ctx.channel):
-        return
+        Example: .1v1ping"""
 
-    # 2. Check if user already is in the ladder
-    alreadySignedUp = db.isPlayerSignedUp(ctx.author.id)
+        # 1. Checks if posted in general channel
+        if not db.isGeneralChannel(ctx.channel):
+            return
 
-    # 2a. Yes: Display message and quit
-    if alreadySignedUp:
-        await ctx.send("You're already signed up!")
-        return
+        # 2. Checks for admin permissions
+        if not await hasAdminRights(ctx, bot):
+            return
 
-    # 2b. No: Continue
+        # 3. Sends pong and updates ranking
+        await ctx.send('pong')
+        await updateRankingMessage(ctx)
 
-    # 3. Add user to database and gives them a rank
-    db.addPlayer(ctx.author.id)
+    # Used by admins to dispute a reported result and reverse it
+    @commands.command()
+    async def dispute(self, ctx, player: commands.MemberConverter):
+        """Disputes the last game result of a player.
+        It will reset the match status to "pending" and reverse the effects the report had on the ranking.
+        This is not perfectly accurate and the correct match result should be reported as soon as possible.
 
-    # 4. Give user ladder role
-    ladderRole = discord.utils.get(ctx.guild.roles, id = int(db.getConfig('ladder_role')))
-    await ctx.author.add_roles(ladderRole, reason = 'Signed up for 1v1 ladder')
+        Example: .1v1dispute @Player"""
 
-    # 5. Add user to ranking
-    await updateRankingMessage(ctx)
-
-    # 6. Display success message
-    await ctx.send("Welcome to the 1v1 ladder!")
-
-
-# Used by users to challenge other users in the ladder
-@bot.command()
-async def challenge(ctx, opponent: commands.MemberConverter = None):
-    # 1. Checks if posted in general channel
-    if not db.isGeneralChannel(ctx.channel):
-        return
-
-    # 2. Check if user has ladder role to use this command
-    if not await isLadderPlayer(ctx):
-        return
-
-    # 3. Check if signup-only mode is active
-    if await isOnlySignupAllowed(ctx):
-        return
+        # 1. Check for admin rights
+        if not await hasAdminRights(ctx, bot):
+            return
         
-    ladder = db.getConfig('current_ladder')
+        # 2. Check if player is playing in ladder
+        if not db.isLadderPlayer(player):
+            await ctx.send(f"{player.name} isn't signed up for the ladder!")
+            return
+        
+        # 3. Get last played challenge
+        ladder = db.getConfig('current_ladder')
+        lastChallengeInfo = db.getLastPlayedChallenge(player.id, ladder)
 
-    # 4. If no opponent was given, display the currently active challenge for the user
-    if opponent is None:
-        activeChallenge = db.getActiveChallenge(ctx.author.id, ladder)
-        message = ''
+        if lastChallengeInfo is None:
+            await ctx.send(f"{player.name} doesn't have any previous games that could be disputed!")
+            return
 
-        # If user has no active challenge, display potential candidates
-        if activeChallenge is None:
-            message += "You don't have any outstandings challenges!"
+        # 4. Get currently active challenge
+        activeChallengeInfo = db.getActiveChallenge(player.id, ladder)
 
-            possibleChallenges = db.getPossibleChallenges(ctx.author.id)
+        if activeChallengeInfo is not None:
+            await ctx.send(f"{player.name} has already started a new challenge! Cancel it first if you want to dispute the previous game.")
+            return
 
-            if len(possibleChallenges) > 0:
-                message += "\nPlayers you could challenge: "
+        # 5. Reverse challenge report
+        db.reverseReport(player.id, lastChallengeInfo, ladder)
 
-                for potentialOpponentID in possibleChallenges:
-                    potentialOpponent = ctx.guild.get_member(potentialOpponentID)
-                    message += f"\n{potentialOpponent.name}"
+        # 6. Update ranking
+        await updateRankingMessage(ctx)
 
-        elif activeChallenge.challenger == ctx.author.id:
-            opponent = ctx.guild.get_member(activeChallenge.opponent)
-            message += f"You challenged {opponent.name}. Play your game until {timeToString(activeChallenge.deadline)}!"
+        # 7. Feedback
+        challenger = ctx.guild.get_member(lastChallengeInfo.challenger)
+        opponent = ctx.guild.get_member(lastChallengeInfo.opponent)
+        await ctx.send(f"The reported result for the game between {challenger.mention} and {opponent.mention} has been disputed.")
+
+    # Used by admins to cancel all overdue challenges
+    @commands.command()
+    async def clear(self, ctx):
+        """Cancels all overdue challenges in the current ladder.
+        Kicks players with too many cancellations. Automatically updates the ranking.
+
+        Example: .1v1clear"""
+
+        # 1. Check if user has the admin role
+        if not await hasAdminRights(ctx, bot):
+            return
+
+        # 2. Fetch all outstanding challenges from the database that are overdue
+        affectedGames = db.cancelAllOverdueChallenges()
+
+        # 3. Cancel all overdue challenges and kick players with too many cancellations
+        message = ""
+
+        if len(affectedGames) == 0 or affectedGames[0] is None:
+            message = "No matches were overdue!"
         else:
-            opponent = ctx.guild.get_member(activeChallenge.challenger)
-            message += f"{opponent.name} challenged you! Play your game until {timeToString(activeChallenge.deadline)}."
+            maxCancels = int(db.getConfig('num_cancels'))
 
-        timeouts = db.getTimeoutInfo(ctx.author.id, ladder)
+            for game in affectedGames:
+                challenger = ctx.guild.get_member(game.challenger)
+                opponent = ctx.guild.get_member(game.opponent)
 
-        if timeouts is not None and timeouts.outgoingTimeout is not None:
-            message += f"\nYou're on timeout and can't challenge others until {timeToString(timeouts.outgoingTimeout)}."
-        
-        if timeouts is not None and timeouts.incomingTimeout is not None:
-            message += f"\nYou're protected from challenges until {timeToString(timeouts.incomingTimeout)}."
+                message += f"{challenger.mention} vs {opponent.mention} has been cancelled.\n"
 
+                if game.challengerCancels > maxCancels:
+                    await kickPlayer(ctx, challenger, "1v1 bot", f"Exceeded maximum amount of cancellations ({maxCancels})")
+                    message += f"{challenger.mention} has been kicked from the ladder for exceeding the allowed maximum number of cancellations ({maxCancels}).\n"
+                else:
+                    message += f"{challenger.mention} has {maxCancels - game.challengerCancels} out of {maxCancels} cancellations remaining.\n"
+
+                if game.opponentCancels > maxCancels:
+                    await kickPlayer(ctx, opponent, "1v1 bot", f"Exceeded maximum amount of cancellations ({maxCancels})")
+                    message += f"{opponent.mention} has been kicked from the ladder for exceeding the allowed maximum number of cancellations ({maxCancels}).\n"
+                else:
+                    message += f"{opponent.mention} has {maxCancels - game.opponentCancels} out of {maxCancels} cancellations remaining.\n"
+
+
+        # 4. Display success message: @ users whose challenges got cancelled by this
         await ctx.send(message)
-        return
 
-    # 5. Check if user can challenge other user:
-    # 5a. Is user trying to challenge themself?
-    isChallengingThemself = (ctx.author.id == opponent.id)
+    # Used by admins to kick players from the ladder
+    @commands.command()
+    async def kick(self, ctx, player: commands.MemberConverter, reason = ''):
+        """Kicks a player from the current ladder.
+        Automatically updates the ranking.
+        The player can rejoin the ladder by signing up again but this resets their ranking and record completely.
 
-    if isChallengingThemself:
-        await ctx.send("You can't challenge yourself!")
-        return
+        Example: .1v1kick @Player"""
 
-    # 5b. Is challenged user even signed up?
-    isOpponentSignedUp = db.isPlayerSignedUp(opponent.id, ladder)
-
-    if not isOpponentSignedUp:
-        await ctx.send(f"{opponent.name} isn't signed up for the ladder. Please only challenge players that already play in the ladder!")
-        return
-
-    # 5c. Is user in timeout?
-    hasChallengerTimeout = db.hasChallengeTimeout(ctx.author.id, ladder)
-
-    if hasChallengerTimeout:
-        await ctx.send("Slow down! You're still on cooldown from your last game, so that other players can challenge you.")
-        return
-
-    # 5d. Is the other player in a rank or tier that allows the challenge?
-    isChallengePermitted = db.canChallenge(ctx.author.id, opponent.id, ladder)
-
-    if not isChallengePermitted:
-        await ctx.send(f"You can't challenge {opponent.name}! They must be either in the tier above yours, or in the same tier but higher ranked.")
-        return
-
-
-    # 5e. Is user already challenging someone?
-    userActiveChallenge = db.getActiveChallenge(ctx.author.id, ladder)
-
-    if userActiveChallenge is not None:
-        await ctx.send(f"You can't have more than one active challenge! Use '{prefix}challenge' to get info about your current challenge.")
-        return
-
-    # 5f. Is challenged user in universal timeout?
-    hasOpponentChallengeProtection = db.hasChallengeProtection(opponent.id, ladder)
-
-    if hasOpponentChallengeProtection:
-        await ctx.send(f"{opponent.name} currently has challenge protection. You can challenge them once it has expired!")
-        return
-
-    # 5g. Is opponent already challenging/getting challenged?
-    opponentActiveChallenge = db.getActiveChallenge(opponent.id, ladder)
-
-    if opponentActiveChallenge is not None:
-        await ctx.send(f"{opponent.name} is already in a challenge against someone else!")
-        return
-
-    # 5h. Did the user already play against this opponent last game?
-    lastChallengeInfo = db.getLastPlayedChallenge(ctx.author.id, ladder)
-
-    didPlaySameOpponentLastGame = False
-
-    if lastChallengeInfo is not None:
-        didPlaySameOpponentLastGame = (lastChallengeInfo.challenger == opponent.id or lastChallengeInfo.opponent == opponent.id)
-
-    if didPlaySameOpponentLastGame:
-        await ctx.send(f"You already played against {opponent.name} in your previous game! You have to play at least one other player before you can challenge the same person again.")
-        return
-
-    # 6. Add challenge to database
-    db.addChallenge(ctx.author.id, opponent.id)
-
-    # 7. Display success message
-    challengeTimeout = db.getConfig('challenge_timeout')
-    await ctx.send(f"{ctx.author.mention} has challenged {opponent.mention}! Play your game in the next {challengeTimeout} days and report the result using {prefix}report W/L.")
-
-
-# Used by users or admins to cancel challenges
-@bot.command()
-async def cancel(ctx, player = None):
-    # 1. Check if correct channel
-    if not db.isGeneralChannel(ctx.channel) and not await hasAdminRights(ctx, bot):
-        return
-
-    # 2. Check if user has either permission to run this command:
-    if player is None:
-        # 2a. Ladder role if no player arugment is given
-        if not await isLadderPlayer(ctx):
-            return
-        else:
-            player = ctx.author
-    else:
-        # 2b. Admin role if player argument is given
+        # 1. Check if user has admin role
         if not await hasAdminRights(ctx, bot):
             return
 
-    # 3. Check if signup-only mode is active
-    if await isOnlySignupAllowed(ctx):
-        return
-
-    # 4. Get info about active challenge
-    ladder = db.getConfig('current_ladder')
-    activeChallenge = db.getActiveChallenge(player.id, ladder)
-
-    if activeChallenge is None:
-        await ctx.send(f"There are no active challenges for {player.name} that could be cancelled!")
-        return
-
-    # 5. Update the challenge to cancelled/denied state in the database
-    db.cancelActiveChallenge(player.id, ladder)
-
-    # 6. Update number of cancellations for the player
-    cancels = db.incrementCancelCounter(player.id, ladder)
-
-    # 7. Kick the player if the number of cancellations exceeds the maximum permitted number
-    challenger = ctx.guild.get_member(activeChallenge.challenger)
-    opponent = ctx.guild.get_member(activeChallenge.opponent)
-    message = f"The game between {challenger.mention} and {opponent.mention} has been cancelled."
-
-    maxCancels = int(db.getConfig('num_cancels'))
-    if cancels > maxCancels:
-        await kickPlayer(ctx, player, "1v1 bot", f"Exceeded maximum amount of cancellations ({maxCancels})")
-        
-        message += f"\n{player.mention} has been kicked from the ladder for exceeding the allowed number of cancellations ({maxCancels})."
-    else:
-        message += f"\nIt was cancelled by {player.mention} who has {maxCancels - cancels} out of {maxCancels} cancellations remaining."
-
-    # 8. Display success message, @ both users
-    await ctx.send(message)
-
-
-# Used by users or admins to report game results
-@bot.command()
-async def report(ctx, result, player = None):
-    # 1. Check if correct channel
-    if not db.isGeneralChannel(ctx.channel):
-        return
-
-    # 2. Check if user has either permission to run this command:
-    if player is None:
-        # 2a. Ladder role if no player arugment is given
-        if not await isLadderPlayer(ctx):
+        # 2. Check if target is part of the ladder
+        if not db.isLadderPlayer(player):
+            await ctx.send("Player isn't participating in the 1v1 ladder!")
             return
-        else:
-            player = ctx.author
-    else:
-        # 2b. Admin role if player argument is given
+
+        # 3. Remove ladder role and delete player from ladder database, update ranking
+        await kickPlayer(ctx, player, ctx.author.name, reason)
+
+        # 4. Display success message
+        kickMessage = f"{player.name} was kicked from the ladder."
+        if not reason == '':
+            kickMessage += f" Reason: '{reason}'"
+        await ctx.send(kickMessage)
+        await ctx.message.delete()
+
+
+    # Used by admins to time out users from the ladder
+    @commands.command()
+    async def timeout(self, ctx, player: commands.MemberConverter, duration: int):
+        """Times out a player for a given number of days.
+        This prevents them from challenging anyone and from getting challenged.
+        If the provided duration is zero, all timeouts and cooldowns are removed from the player.
+
+        Example: .1v1timeout @Player 3"""
+
+        # 1. Check if user has admin role
         if not await hasAdminRights(ctx, bot):
             return
 
-    # 3. Checks if signup-only mode is active
-    if await isOnlySignupAllowed(ctx):
-        return
+        # 2. Check if target is part of the ladder
+        if not db.isLadderPlayer(player):
+            await ctx.send(f"{player.name} isn't signed up for the ladder and therefore can't be timed out!")
+            return
 
-    # 4. Check if user has a challenge that can be reported
-    ladder = db.getConfig('current_ladder')
-    activeChallenge = db.getActiveChallenge(player.id, ladder)
+        # 3. Add timeout to the database for outgoing and incoming challenges
+        db.giveChallengeCooldown(player.id, duration)
+        db.giveChallengeProtection(player.id, duration)
 
-    if activeChallenge is None:
-        await ctx.send(f"There are no active challenges for {player.name} that could be reported.")
-        return
+        # 4. Display success message
+        if duration > 0:
+            await ctx.send(f"{ctx.author.name} timed out {player.mention} for {duration} days.")
+        else:
+            await ctx.send(f"{ctx.author.name} removed {player.mention}'s timeout.")
 
-    # 5. Check if result string is valid (either W(in) or L(oss))
-    result = result.lower()
+    # Used by admins to shuffle the ladder after signups
+    @commands.command()
+    async def shuffle(self, ctx):
+        """Shuffles the ranking of the current ladder randomly.
+        Only works with 'signup_only' enabled.
 
-    gameWon = True
-    if result.startswith('w'):
-        gameWon = True
-    elif result.startswith('l'):
-        gameWon = False
-    else:
-        await ctx.send("Invalid game result: Enter 'W' if you won the game or 'L' if you lost!")
-        return
-    
-    # 6. Makes sure "gameWon" is true if the challenger won and false if they lost
-    if not activeChallenge.challenger == player.id:
-        gameWon = not gameWon
+        Example: .1v1shuffle"""
 
-    # 7. Update challenge and ranking in the database
-    db.reportResult(activeChallenge, gameWon, ladder)
+        # 1. Check if user has admin role
+        if not await hasAdminRights(ctx, bot):
+            return
 
-    # 8. Timeout the challenging player from challenging for the configured time
-    outgoingCooldown = db.getConfig('outgoing_cooldown')
-    db.giveChallengeCooldown(activeChallenge.challenger, outgoingCooldown, ladder)
+        # 2. Check if signup-only mode is enabled
+        if not int(db.getConfig('signup_only')) == 1:
+            await ctx.send("The ladder can only be shuffled when signup-only mode is enabled!")
+            return
 
-    # 9. Give challenged player challenge protection
-    challengeProtection = db.getConfig('challenge_protection')
-    db.giveChallengeProtection(activeChallenge.opponent, challengeProtection, ladder)
+        # 3. Shuffle the ladder
+        db.shuffleLadder()
 
-    # 10. Edit ranking message
-    await updateRankingMessage(ctx)
+        # 4. Update the ranking
+        await updateRankingMessage(ctx)
 
-    # 11. Display success message: Maybe information if someone gets promoted to a new tier, who got timeout
-    await ctx.send('Game result has been reported!')
+        # 5. Feedback
+        await ctx.send("The ladder has been shuffled!")
+
+    # Used by admins to configure the bot
+    @commands.command()
+    async def config(self, ctx, name, value = ''):
+        """Allows to tweak various settings of the bot.
+        If additionally to the name an argument is given, the setting is changed.
+        Otherwise the bot will display the current value of the setting.
+
+        Current list of supported settings and which argument to give to them:
+
+        Name                 | Value
+        ---------------------+-----------------------------------------------------------------------------------------
+        current_ladder       | Name of the current ladder. Change this to create a new ladder
+        ranking_channel      | The channel to that the ranking message should be posted
+        general_channel      | The channel in which players can run bot commands
+        ladder_role          | Mention of the role given to ladder players
+        admin_role           | Mention of the role required for admin commands
+        signup_only          | 1 if players should only be able to sign-up and not challenge anyone yet. 0 otherwise
+        num_cancels          | Number of allowed cancellations before a player gets kicked
+        challenge_timeout    | Number of days players have to play a game after the challenge was issued
+        outgoing_cooldown    | Number of days a player can't challenge after playing a game they challenged for
+        challenge_protection | Number of days a player can't be challenged after playing a game they got challenged for
+        ranking_message      | ID of the ranking message to be edited by the bot. Is set by bot automatically.
+
+        Examples:
+        .1v1config outgoing_cooldown
+        .1v1config ranking_channel #1v1-ranking
+        .1v1config ladder_role @1v1
+        .1v1config current_ladder "Season 2"
+        .1v1config challenge_protection 1"""
+
+        # 1. Check if user has admin role
+        if not await hasAdminRights(ctx, bot):
+            return
+
+        # 2. Check if value should be loaded or set
+        # 2a. Load and display value
+        if value == '':
+            try:
+                value = db.getConfig(name)
+            except:
+                await ctx.send(f"Invalid configuration name '{name}'!")
+                return
+            
+            if name == 'admin_role' or name == 'ladder_role':
+                value = f"<@&{value}>"
+            
+            if name == 'general_channel' or name == 'ranking_channel':
+                value = f"<#{value}>"
+
+            await ctx.send(f"'{name}' = '{value}'")
+            return
+
+        # 2b. Update value of the configuration
+        else:
+            # Convert value to required datatype
+            if value.startswith('<@&'):
+                value = value[3:-1]
+            if value.startswith('<#'):
+                value = value[2:-1]
+
+            try:
+                db.setConfig(name, value)
+            except:
+                await ctx.send(f"Invalid configuration name '{name}'!")
+                return
+
+        # 3. Display success message
+        await ctx.send(f"Set '{name}' to '{value}'!")
 
 
-# Used by admins to dispute a reported result and reverse it
-@bot.command()
-async def dispute(ctx, player: commands.MemberConverter):
-    # 1. Check for admin rights
-    if not await hasAdminRights(ctx, bot):
-        return
-    
-    # 2. Check if player is playing in ladder
-    if not db.isLadderPlayer(player):
-        await ctx.send(f"{player.name} isn't signed up for the ladder!")
-        return
-    
-    # 3. Get last played challenge
-    ladder = db.getConfig('current_ladder')
-    lastChallengeInfo = db.getLastPlayedChallenge(player.id, ladder)
+class PlayerCommands(commands.Cog, name = "Player Commands"):
+    """Commands that can be used by all ladder players."""
 
-    # 4. Reverse challenge report
-    db.reverseReport(player.id, lastChallengeInfo, ladder)
+    # Used by users to enter the ladder
+    @commands.command()
+    async def signup(self, ctx):
+        """Signs the user up for the current ladder.
+        Gives them the ladder role and updates the rankings.
 
-    # 5. Update ranking
-    await updateRankingMessage(ctx)
+        Example: .1v1signup"""
 
-    # 6. Feedback
-    challenger = ctx.guild.get_member(lastChallengeInfo.challenger)
-    opponent = ctx.guild.get_member(lastChallengeInfo.opponent)
-    await ctx.send(f"The reported result for the game between {challenger.mention} and {opponent.mention} has been disputed.")
+        # 1. Check if posted in general channel
+        if not db.isGeneralChannel(ctx.channel):
+            return
 
-# Used by admins to cancel all overdue challenges
-@bot.command()
-async def clear(ctx):
-    # 1. Check if user has the admin role
-    if not await hasAdminRights(ctx, bot):
-        return
+        # 2. Check if user already is in the ladder
+        alreadySignedUp = db.isPlayerSignedUp(ctx.author.id)
 
-    # 2. Fetch all outstanding challenges from the database that are overdue
-    affectedGames = db.cancelAllOverdueChallenges()
+        # 2a. Yes: Display message and quit
+        if alreadySignedUp:
+            await ctx.send("You're already signed up!")
+            return
 
-    # 3. Cancel all overdue challenges and kick players with too many cancellations
-    message = ""
+        # 2b. No: Continue
 
-    if len(affectedGames) == 0 or affectedGames[0] is None:
-        message = "No matches were overdue!"
-    else:
+        # 3. Add user to database and gives them a rank
+        db.addPlayer(ctx.author.id)
+
+        # 4. Give user ladder role
+        ladderRole = discord.utils.get(ctx.guild.roles, id = int(db.getConfig('ladder_role')))
+        await ctx.author.add_roles(ladderRole, reason = 'Signed up for 1v1 ladder')
+
+        # 5. Add user to ranking
+        await updateRankingMessage(ctx)
+
+        # 6. Display success message
+        await ctx.send("Welcome to the 1v1 ladder!")
+
+
+    # Used by users to challenge other users in the ladder
+    @commands.command()
+    async def challenge(self, ctx, opponent: commands.MemberConverter = None):
+        """Challenges the mentioned user to a duel.
+        If no mention is given, it instead displays information about the users active challenge and timeouts.
+
+        Example: .1v1challenge @Player"""
+
+        # 1. Checks if posted in general channel
+        if not db.isGeneralChannel(ctx.channel):
+            return
+
+        # 2. Check if user has ladder role to use this command
+        if not await isLadderPlayer(ctx):
+            return
+
+        # 3. Check if signup-only mode is active
+        if await isOnlySignupAllowed(ctx):
+            return
+            
+        ladder = db.getConfig('current_ladder')
+
+        # 4. If no opponent was given, display the currently active challenge for the user
+        if opponent is None:
+            activeChallenge = db.getActiveChallenge(ctx.author.id, ladder)
+            message = ''
+
+            # Add timeout info to message
+            timeouts = db.getTimeoutInfo(ctx.author.id, ladder)
+
+            if timeouts is not None and timeouts.outgoingTimeout is not None:
+                message += f"\nYou're on timeout and can't challenge others until {timeToString(timeouts.outgoingTimeout)}."
+            
+            if timeouts is not None and timeouts.incomingTimeout is not None:
+                message += f"\nYou're protected from challenges until {timeToString(timeouts.incomingTimeout)}."
+
+            # If user has no active challenge, display potential candidates
+            if activeChallenge is None:
+                message += "\nYou don't have any outstanding challenges!"
+
+                possibleChallenges = db.getPossibleChallenges(ctx.author.id)
+
+                if len(possibleChallenges) > 0:
+                    message += "\nPlayers you could challenge: "
+
+                    for potentialOpponentID in possibleChallenges:
+                        potentialOpponent = ctx.guild.get_member(potentialOpponentID)
+                        message += f"\n{potentialOpponent.name}"
+
+            elif activeChallenge.challenger == ctx.author.id:
+                opponent = ctx.guild.get_member(activeChallenge.opponent)
+                message += f"You challenged {opponent.name}. Play your game until {timeToString(activeChallenge.deadline)}!"
+            else:
+                opponent = ctx.guild.get_member(activeChallenge.challenger)
+                message += f"{opponent.name} challenged you! Play your game until {timeToString(activeChallenge.deadline)}."
+
+            if message.startswith('\n'):
+                message = message[1:]
+
+            await ctx.send(message)
+            return
+
+        # 5. Check if user can challenge other user:
+        # 5a. Is user trying to challenge themself?
+        isChallengingThemself = (ctx.author.id == opponent.id)
+
+        if isChallengingThemself:
+            await ctx.send("You can't challenge yourself!")
+            return
+
+        # 5b. Is challenged user even signed up?
+        isOpponentSignedUp = db.isPlayerSignedUp(opponent.id, ladder)
+
+        if not isOpponentSignedUp:
+            await ctx.send(f"{opponent.name} isn't signed up for the ladder. Please only challenge players that already play in the ladder!")
+            return
+
+        # 5c. Is user in timeout?
+        hasChallengerTimeout = db.hasChallengeTimeout(ctx.author.id, ladder)
+
+        if hasChallengerTimeout:
+            await ctx.send("Slow down! You're still on cooldown from your last game, so that other players can challenge you.")
+            return
+
+        # 5d. Is the other player in a rank or tier that allows the challenge?
+        isChallengePermitted = db.canChallenge(ctx.author.id, opponent.id, ladder)
+
+        if not isChallengePermitted:
+            await ctx.send(f"You can't challenge {opponent.name}! They must be either in the tier above yours, or in the same tier but higher ranked.")
+            return
+
+
+        # 5e. Is user already challenging someone?
+        userActiveChallenge = db.getActiveChallenge(ctx.author.id, ladder)
+
+        if userActiveChallenge is not None:
+            await ctx.send(f"You can't have more than one active challenge! Use '{prefix}challenge' to get info about your current challenge.")
+            return
+
+        # 5f. Is challenged user in universal timeout?
+        hasOpponentChallengeProtection = db.hasChallengeProtection(opponent.id, ladder)
+
+        if hasOpponentChallengeProtection:
+            await ctx.send(f"{opponent.name} currently has challenge protection. You can challenge them once it has expired!")
+            return
+
+        # 5g. Is opponent already challenging/getting challenged?
+        opponentActiveChallenge = db.getActiveChallenge(opponent.id, ladder)
+
+        if opponentActiveChallenge is not None:
+            await ctx.send(f"{opponent.name} is already in a challenge against someone else!")
+            return
+
+        # 5h. Did the user already play against this opponent last game?
+        lastChallengeInfo = db.getLastPlayedChallenge(ctx.author.id, ladder)
+
+        didPlaySameOpponentLastGame = False
+
+        if lastChallengeInfo is not None:
+            didPlaySameOpponentLastGame = (lastChallengeInfo.challenger == opponent.id or lastChallengeInfo.opponent == opponent.id)
+
+        if didPlaySameOpponentLastGame:
+            await ctx.send(f"You already played against {opponent.name} in your previous game! You have to play at least one other player before you can challenge the same person again.")
+            return
+
+        # 6. Add challenge to database
+        db.addChallenge(ctx.author.id, opponent.id)
+
+        # 7. Display success message
+        challengeTimeout = db.getConfig('challenge_timeout')
+        await ctx.send(f"{ctx.author.mention} has challenged {opponent.mention}! Play your game in the next {challengeTimeout} days and report the result using {prefix}report W/L.")
+
+
+    # Used by users or admins to cancel challenges
+    @commands.command()
+    async def cancel(self, ctx, player = None):
+        """Cancels the currently active challenge of the user.
+        Admins can mention a player whose match should be cancelled instead.
+        The player whose match got cancelled receives one cancellation token. If they exceed the maximum number
+        of tokens, they are kicked from the ladder automatically.
+
+        Example: .1v1cancel @Player"""
+
+        # 1. Check if correct channel
+        if not db.isGeneralChannel(ctx.channel) and not await hasAdminRights(ctx, bot):
+            return
+
+        # 2. Check if user has either permission to run this command:
+        if player is None:
+            # 2a. Ladder role if no player arugment is given
+            if not await isLadderPlayer(ctx):
+                return
+            else:
+                player = ctx.author
+        else:
+            # 2b. Admin role if player argument is given
+            if not await hasAdminRights(ctx, bot):
+                return
+
+        # 3. Check if signup-only mode is active
+        if await isOnlySignupAllowed(ctx):
+            return
+
+        # 4. Get info about active challenge
+        ladder = db.getConfig('current_ladder')
+        activeChallenge = db.getActiveChallenge(player.id, ladder)
+
+        if activeChallenge is None:
+            await ctx.send(f"There are no active challenges for {player.name} that could be cancelled!")
+            return
+
+        # 5. Update the challenge to cancelled/denied state in the database
+        db.cancelActiveChallenge(player.id, ladder)
+
+        # 6. Update number of cancellations for the player
+        cancels = db.incrementCancelCounter(player.id, ladder)
+
+        # 7. Kick the player if the number of cancellations exceeds the maximum permitted number
+        challenger = ctx.guild.get_member(activeChallenge.challenger)
+        opponent = ctx.guild.get_member(activeChallenge.opponent)
+        message = f"The game between {challenger.mention} and {opponent.mention} has been cancelled."
+
         maxCancels = int(db.getConfig('num_cancels'))
+        if cancels > maxCancels:
+            await kickPlayer(ctx, player, "1v1 bot", f"Exceeded maximum amount of cancellations ({maxCancels})")
+            
+            message += f"\n{player.mention} has been kicked from the ladder for exceeding the allowed number of cancellations ({maxCancels})."
+        else:
+            message += f"\nIt was cancelled by {player.mention} who has {maxCancels - cancels} out of {maxCancels} cancellations remaining."
 
-        for game in affectedGames:
-            challenger = ctx.guild.get_member(game.challenger)
-            opponent = ctx.guild.get_member(game.opponent)
-
-            message += f"{challenger.mention} vs {opponent.mention} has been cancelled.\n"
-
-            if game.challengerCancels > maxCancels:
-                await kickPlayer(ctx, challenger, "1v1 bot", f"Exceeded maximum amount of cancellations ({maxCancels})")
-                message += f"{challenger.mention} has been kicked from the ladder for exceeding the allowed maximum number of cancellations ({maxCancels}).\n"
-            else:
-                message += f"{challenger.mention} has {maxCancels - game.challengerCancels} out of {maxCancels} cancellations remaining.\n"
-
-            if game.opponentCancels > maxCancels:
-                await kickPlayer(ctx, opponent, "1v1 bot", f"Exceeded maximum amount of cancellations ({maxCancels})")
-                message += f"{opponent.mention} has been kicked from the ladder for exceeding the allowed maximum number of cancellations ({maxCancels}).\n"
-            else:
-                message += f"{opponent.mention} has {maxCancels - game.opponentCancels} out of {maxCancels} cancellations remaining.\n"
+        # 8. Display success message, @ both users
+        await ctx.send(message)
 
 
-    # 4. Display success message: @ users whose challenges got cancelled by this
-    await ctx.send(message)
+    # Used by users or admins to report game results
+    @commands.command()
+    async def report(self, ctx, result, player = None):
+        """Reports the result of the active challenge of the user.
+        Admins can mention a player to report their match result.
+        Valid match results are: W, Win, L, Loss (case-insensitive).
 
-# Used by admins to kick players from the ladder
-@bot.command()
-async def kick(ctx, player: commands.MemberConverter, reason = ''):
-    # 1. Check if user has admin role
-    if not await hasAdminRights(ctx, bot):
-        return
+        Example: .1v1report W @Player"""
 
-    # 2. Check if target is part of the ladder
-    if not db.isLadderPlayer(player):
-        await ctx.send("Player isn't participating in the 1v1 ladder!")
-        return
-
-    # 3. Remove ladder role and delete player from ladder database, update ranking
-    await kickPlayer(ctx, player, ctx.author.name, reason)
-
-    # 4. Display success message
-    kickMessage = f"{player.name} was kicked from the ladder."
-    if not reason == '':
-        kickMessage += f" Reason: '{reason}'"
-    await ctx.send(kickMessage)
-    await ctx.message.delete()
-
-
-# Used by admins to time out users from the ladder
-@bot.command()
-async def timeout(ctx, player: commands.MemberConverter, duration: int):
-    # 1. Check if user has admin role
-    if not await hasAdminRights(ctx, bot):
-        return
-
-    # 2. Check if target is part of the ladder
-    if not db.isLadderPlayer(player):
-        await ctx.send(f"{player.name} isn't signed up for the ladder and therefore can't be timed out!")
-        return
-
-    # 3. Add timeout to the database for outgoing and incoming challenges
-    db.giveChallengeCooldown(player.id, duration)
-    db.giveChallengeProtection(player.id, duration)
-
-    # 4. Display success message
-    if duration > 0:
-        await ctx.send(f"{ctx.author.name} timed out {player.mention} for {duration} days.")
-    else:
-        await ctx.send(f"{ctx.author.name} removed {player.mention}'s timeout.")
-
-# Used by admins to shuffle the ladder after signups
-@bot.command()
-async def shuffle(ctx):
-    # 1. Check if user has admin role
-    if not await hasAdminRights(ctx, bot):
-        return
-
-    # 2. Check if signup-only mode is enabled
-    if not int(db.getConfig('signup_only')) == 1:
-        await ctx.send("The ladder can only be shuffled when signup-only mode is enabled!")
-        return
-
-    # 3. Shuffle the ladder
-    db.shuffleLadder()
-
-    # 4. Update the ranking
-    await updateRankingMessage(ctx)
-
-    # 5. Feedback
-    await ctx.send("The ladder has been shuffled!")
-
-# Used by admins to configure the bot
-@bot.command()
-async def config(ctx, name, value = ''):
-    # 1. Check if user has admin role
-    if not await hasAdminRights(ctx, bot):
-        return
-
-    # 2. Check if value should be loaded or set
-    # 2a. Load and display value
-    if value == '':
-        try:
-            value = db.getConfig(name)
-        except:
-            await ctx.send(f"Invalid configuration name '{name}'!")
-            return
-        
-        if name == 'admin_role' or name == 'ladder_role':
-            value = f"<@&{value}>"
-        
-        if name == 'general_channel' or name == 'ranking_channel':
-            value = f"<#{value}>"
-
-        await ctx.send(f"'{name}' = '{value}'")
-        return
-
-    # 2b. Update value of the configuration
-    else:
-        # Convert value to required datatype
-        if value.startswith('<@&'):
-            value = value[3:-1]
-        if value.startswith('<#'):
-            value = value[2:-1]
-
-        try:
-            db.setConfig(name, value)
-        except:
-            await ctx.send(f"Invalid configuration name '{name}'!")
+        # 1. Check if correct channel
+        if not db.isGeneralChannel(ctx.channel):
             return
 
-    # 3. Display success message
-    await ctx.send(f"Set '{name}' to '{value}'!")
+        # 2. Check if user has either permission to run this command:
+        if player is None:
+            # 2a. Ladder role if no player arugment is given
+            if not await isLadderPlayer(ctx):
+                return
+            else:
+                player = ctx.author
+        else:
+            # 2b. Admin role if player argument is given
+            if not await hasAdminRights(ctx, bot):
+                return
+
+        # 3. Checks if signup-only mode is active
+        if await isOnlySignupAllowed(ctx):
+            return
+
+        # 4. Check if user has a challenge that can be reported
+        ladder = db.getConfig('current_ladder')
+        activeChallenge = db.getActiveChallenge(player.id, ladder)
+
+        if activeChallenge is None:
+            await ctx.send(f"There are no active challenges for {player.name} that could be reported.")
+            return
+
+        # 5. Check if result string is valid (either W(in) or L(oss))
+        result = result.lower()
+
+        gameWon = True
+        if result.startswith('w'):
+            gameWon = True
+        elif result.startswith('l'):
+            gameWon = False
+        else:
+            await ctx.send("Invalid game result: Enter 'W' if you won the game or 'L' if you lost!")
+            return
+        
+        # 6. Makes sure "gameWon" is true if the challenger won and false if they lost
+        if not activeChallenge.challenger == player.id:
+            gameWon = not gameWon
+
+        # 7. Update challenge and ranking in the database
+        db.reportResult(activeChallenge, gameWon, ladder)
+
+        # 8. Timeout the challenging player from challenging for the configured time
+        outgoingCooldown = db.getConfig('outgoing_cooldown')
+        db.giveChallengeCooldown(activeChallenge.challenger, outgoingCooldown, ladder)
+
+        # 9. Give challenged player challenge protection
+        challengeProtection = db.getConfig('challenge_protection')
+        db.giveChallengeProtection(activeChallenge.opponent, challengeProtection, ladder)
+
+        # 10. Edit ranking message
+        await updateRankingMessage(ctx)
+
+        # 11. Display success message: Maybe information if someone gets promoted to a new tier, who got timeout
+        await ctx.send('Game result has been reported!')
+
+
+# Adds commands to the bot
+bot.add_cog(PlayerCommands())
+bot.add_cog(AdminCommands())
 
 # Runs bot
 print('Starting bot...')
