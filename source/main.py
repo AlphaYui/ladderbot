@@ -326,17 +326,23 @@ class AdminCommands(commands.Cog, name = "Admin Commands"):
             if len(player) > 10:
                 # Tries to read the input as Discord ID, assuming the player left the server
                 db.kickPlayer(int(player))
+                await updateRankingMessage(ctx)
                 await ctx.send(f"Player was removed from the 1v1 ladder!")
                 return
             else:
                 # Interprets the input as ranking number
                 playerInfo = db.getPlayerByRank(player)
 
+                if playerInfo is None:
+                    await ctx.send(f"There's no player at #{player}.")
+                    return
+
                 try:
                     player = await converter.convert(ctx, playerInfo.discordID)
                 except:
                     # If player isn't in server anymore, deletes them from the database
                     db.kickPlayer(int(playerInfo.discordID))
+                    await updateRankingMessage(ctx)
                     await ctx.send(f"Player at rank #{player} was removed from the 1v1 ladder!")
                     return
 
