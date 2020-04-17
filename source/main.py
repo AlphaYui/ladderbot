@@ -119,17 +119,20 @@ def generateRankingEmbed(ctx):
 
 # Retrieves ranking message and updates it with the new ranking    
 async def updateRankingMessage(ctx):
-    rankingEmbed = generateRankingEmbed(ctx)
-    rankingMessage = await getRankingMessage(ctx)
+    try:
+        rankingEmbed = generateRankingEmbed(ctx)
+        rankingMessage = await getRankingMessage(ctx)
 
-    if rankingMessage is None:
-        rankingChannelID = int(db.getConfig('ranking_channel'))
-        rankingChannel = ctx.guild.get_channel(rankingChannelID)
+        if rankingMessage is None:
+            rankingChannelID = int(db.getConfig('ranking_channel'))
+            rankingChannel = ctx.guild.get_channel(rankingChannelID)
 
-        rankingMessage = await rankingChannel.send(embed = rankingEmbed)
-        db.setConfig('ranking_message', rankingMessage.id)
-    else:
-        await rankingMessage.edit(embed = rankingEmbed)
+            rankingMessage = await rankingChannel.send(embed = rankingEmbed)
+            db.setConfig('ranking_message', rankingMessage.id)
+        else:
+            await rankingMessage.edit(embed = rankingEmbed)
+    except:
+        await ctx.send("Your command was executed but an error occured while updating the ranking message!")
 
 # Returns the width required for a column to fit all names
 def getNamePadding(ctx, players):
