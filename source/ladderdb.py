@@ -113,6 +113,19 @@ class LadderDatabase:
         self.cursor.execute("DELETE FROM Players WHERE DiscordID=%s AND Ladder=%s;", (discordID, ladder,))
         self.database.commit()
 
+    def getPlayerByRank(self, rank, ladder = ''):
+        if ladder == '':
+            ladder = self.getConfig('current_ladder')
+
+        self.cursor.execute("SELECT PlayerID, Rank, Tier, Wins, Losses, Titles FROM Players WHERE Rank=%s AND Ladder=%s;", (rank, ladder,))
+        result = self.cursor.fetchall()
+
+        if len(result) == 0 or result[0][0] is None:
+            return None
+        else:
+            row = result[0]
+            return PlayerInfo(row[0], discordID, row[1], row[2], row[3], row[4], row[5])
+
     # Checks if player is signed up for the ladder
     def isPlayerSignedUp(self, discordID, ladder = ''):
         if ladder == '':

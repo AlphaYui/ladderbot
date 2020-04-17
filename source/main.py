@@ -302,7 +302,7 @@ class AdminCommands(commands.Cog, name = "Admin Commands"):
 
     # Used by admins to kick players from the ladder
     @commands.command()
-    async def kick(self, ctx, player: commands.MemberConverter, reason = ''):
+    async def kick(self, ctx, player: str, reason = ''):
         """Kicks a player from the current ladder.
         Automatically updates the ranking.
         The player can rejoin the ladder by signing up again but this resets their ranking and record completely.
@@ -312,6 +312,30 @@ class AdminCommands(commands.Cog, name = "Admin Commands"):
         # 1. Check if user has admin role
         if not await hasAdminRights(ctx, bot):
             return
+
+        # Tries to convert input to member object
+        try:
+            converter = commands.MemberConverter()
+            player = await converter.convert(ctx, player)
+        except:
+            # If it can't bec converted, try different stuff
+
+            if len(player) > 10:
+                # Tries to read the input as Discord ID, assuming the player left the server
+                db.kickPlayer(int(player))
+                await ctx.send(f"Player was removed from the 1v1 ladder!")
+                return
+            else:
+                # Interprets the input as ranking number
+                playerInfo = db.getPlayerByRank(player)
+
+                try:
+                    player = await converter.convert(ctx, playerInfo.discordID)
+                except:
+                    # If player isn't in server anymore, deletes them from the database
+                    db.kickPlayer(int(playerInfo.discordID))
+                    await ctx.send(f"Player at rank #{player} was removed from the 1v1 ladder!")
+                    return
 
         # 2. Check if target is part of the ladder
         if not db.isLadderPlayer(player):
@@ -326,7 +350,6 @@ class AdminCommands(commands.Cog, name = "Admin Commands"):
         if not reason == '':
             kickMessage += f" Reason: '{reason}'"
         await ctx.send(kickMessage)
-        await ctx.message.delete()
 
 
     # Used by admins to give back cancellations to a specific player
@@ -494,6 +517,18 @@ class AdminCommands(commands.Cog, name = "Admin Commands"):
 
         # 3. Display success message
         await ctx.send(f"Set '{name}' to '{value}'!")
+
+    @commands.Cog.listener()
+    async def on_member_remove(self, member):
+        # Check if member is playing in the ladder
+        if not db.isLadderPlayer(member):
+            return
+
+        # Remove player from database
+        db.kickPlayer(player.id)
+        
+        # Update standings message
+        await updateRankingMessage(ctx)
 
 
 class PlayerCommands(commands.Cog, name = "Player Commands"):
