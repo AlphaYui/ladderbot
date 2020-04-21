@@ -51,11 +51,15 @@ async def isOnlySignupAllowed(ctx: commands.Context):
         return False
 
 def timeToString(date: datetime.datetime) -> str:
-    return f"{date.day}.{date.month}.{date.year}, {date.hour}:{date.minute}"
+    return date.strftime("%A, %b %d %Y, %H:%M CEST")
 
 
 # Kicks the given player from the ladder and removes their role
 async def kickPlayer(ctx, player, kickedBy: str, reason = ''):
+
+    # Cancels the active game if necessary
+    db.cancelActiveChallenge(player.id)
+
     # Remove target's ladder role
     ladderRole = discord.utils.get(ctx.guild.roles, id = int(db.getConfig('ladder_role')))
     kickReason = f"Kicked from the ladder by {kickedBy}"
@@ -67,10 +71,11 @@ async def kickPlayer(ctx, player, kickedBy: str, reason = ''):
     db.kickPlayer(player.id)
     
     # Update standings message
-    await updateRankingMessage(ctx)
+    await updateRankingMessage(ctx.guild)
+
 
 # Edits the ranking message with the new standings, or posts a new message if it doesn't exist
-def generateRankingEmbed(ctx):
+def generateRankingEmbed(guild):
 
     # Initializes Embed
     embed = Embed(
@@ -85,7 +90,7 @@ def generateRankingEmbed(ctx):
     # Gets current ranking and column paddings
     rankedPlayers = db.getRanking()
     rankPadding = getRankPadding(rankedPlayers)
-    namePadding = getNamePadding(ctx, rankedPlayers)
+    namePadding = getNamePadding(guild, rankedPlayers)
     winlossPadding = getWinLossPadding(rankedPlayers)
     titlePadding = getTitlesPadding(rankedPlayers)
 
@@ -99,7 +104,7 @@ def generateRankingEmbed(ctx):
             tierMessage = ''
             previousTier = player.tier
         
-        member = ctx.guild.get_member(player.discordID)
+        member = guild.get_member(player.discordID)
 
         rankStr = pad(str(player.rank) + '.', rankPadding + 1)
         nameStr = pad(member.name, namePadding)
@@ -118,27 +123,24 @@ def generateRankingEmbed(ctx):
     return embed
 
 # Retrieves ranking message and updates it with the new ranking    
-async def updateRankingMessage(ctx):
-    try:
-        rankingEmbed = generateRankingEmbed(ctx)
-        rankingMessage = await getRankingMessage(ctx)
+async def updateRankingMessage(guild):
+    rankingEmbed = generateRankingEmbed(guild)
+    rankingMessage = await getRankingMessage(guild)
 
-        if rankingMessage is None:
-            rankingChannelID = int(db.getConfig('ranking_channel'))
-            rankingChannel = ctx.guild.get_channel(rankingChannelID)
+    if rankingMessage is None:
+        rankingChannelID = int(db.getConfig('ranking_channel'))
+        rankingChannel = ctx.guild.get_channel(rankingChannelID)
 
-            rankingMessage = await rankingChannel.send(embed = rankingEmbed)
-            db.setConfig('ranking_message', rankingMessage.id)
-        else:
-            await rankingMessage.edit(embed = rankingEmbed)
-    except:
-        await ctx.send("Your command was executed but an error occured while updating the ranking message!")
+        rankingMessage = await rankingChannel.send(embed = rankingEmbed)
+        db.setConfig('ranking_message', rankingMessage.id)
+    else:
+        await rankingMessage.edit(embed = rankingEmbed)
 
 # Returns the width required for a column to fit all names
-def getNamePadding(ctx, players):
+def getNamePadding(guild, players):
     longestName = 0
     for playerInfo in players:
-        player = ctx.guild.get_member(playerInfo.discordID)
+        player = guild.get_member(playerInfo.discordID)
 
         if len(player.name) > longestName:
             longestName = len(player.name)
@@ -181,11 +183,11 @@ def pad(text: str, characters: int) -> str:
         return text
 
 # Returns the ranking message object or None if it can't be found
-async def getRankingMessage(ctx):
+async def getRankingMessage(guild):
     rankingChannelID = int(db.getConfig('ranking_channel'))
     rankingMessageID = int(db.getConfig('ranking_message'))
 
-    rankingChannel = ctx.guild.get_channel(rankingChannelID)
+    rankingChannel = guild.get_channel(rankingChannelID)
 
     try:
         rankingMessage = await rankingChannel.fetch_message(rankingMessageID)
@@ -212,7 +214,7 @@ class AdminCommands(commands.Cog, name = "Admin Commands"):
 
         # 2. Sends pong and updates ranking
         await ctx.send('pong')
-        await updateRankingMessage(ctx)
+        await updateRankingMessage(ctx.guild)
 
     # Used by admins to dispute a reported result and reverse it
     @commands.command()
@@ -251,7 +253,7 @@ class AdminCommands(commands.Cog, name = "Admin Commands"):
         db.reverseReport(player.id, lastChallengeInfo, ladder)
 
         # 6. Update ranking
-        await updateRankingMessage(ctx)
+        await updateRankingMessage(ctx.guild)
 
         # 7. Feedback
         challenger = ctx.guild.get_member(lastChallengeInfo.challenger)
@@ -326,7 +328,7 @@ class AdminCommands(commands.Cog, name = "Admin Commands"):
             if len(player) > 10:
                 # Tries to read the input as Discord ID, assuming the player left the server
                 db.kickPlayer(int(player))
-                await updateRankingMessage(ctx)
+                await updateRankingMessage(ctx.guild)
                 await ctx.send(f"Player was removed from the 1v1 ladder!")
                 return
             else:
@@ -342,7 +344,7 @@ class AdminCommands(commands.Cog, name = "Admin Commands"):
                 except:
                     # If player isn't in server anymore, deletes them from the database
                     db.kickPlayer(int(playerInfo.discordID))
-                    await updateRankingMessage(ctx)
+                    await updateRankingMessage(ctx.guild)
                     await ctx.send(f"Player at rank #{player} was removed from the 1v1 ladder!")
                     return
 
@@ -453,7 +455,7 @@ class AdminCommands(commands.Cog, name = "Admin Commands"):
         db.shuffleLadder()
 
         # 4. Update the ranking
-        await updateRankingMessage(ctx)
+        await updateRankingMessage(ctx.guild)
 
         # 5. Feedback
         await ctx.send("The ladder has been shuffled!")
@@ -479,6 +481,7 @@ class AdminCommands(commands.Cog, name = "Admin Commands"):
         challenge_timeout    | Number of days players have to play a game after the challenge was issued
         outgoing_cooldown    | Number of days a player can't challenge after playing a game they challenged for
         challenge_protection | Number of days a player can't be challenged after playing a game they got challenged for
+        rank_range           | Number of ranks a player can challenge above his own rank in other tiers
         ranking_message      | ID of the ranking message to be edited by the bot. Is set by bot automatically.
 
         Examples:
@@ -529,15 +532,21 @@ class AdminCommands(commands.Cog, name = "Admin Commands"):
 
     @commands.Cog.listener()
     async def on_member_remove(self, member):
+        memberID = member.id
+        ladder = db.getConfig('current_ladder')
+
         # Check if member is playing in the ladder
-        if not db.isLadderPlayer(member):
+        if not db.isPlayerSignedUp(memberID, ladder):
             return
 
+        # Cancels active challenge if necessary
+        db.cancelActiveChallenge(memberID, ladder)
+
         # Remove player from database
-        db.kickPlayer(player.id)
+        db.kickPlayer(memberID)
         
         # Update standings message
-        await updateRankingMessage(ctx)
+        await updateRankingMessage(member.guild)
 
 
 class PlayerCommands(commands.Cog, name = "Player Commands"):
@@ -573,10 +582,42 @@ class PlayerCommands(commands.Cog, name = "Player Commands"):
         await ctx.author.add_roles(ladderRole, reason = 'Signed up for 1v1 ladder')
 
         # 5. Add user to ranking
-        await updateRankingMessage(ctx)
+        await updateRankingMessage(ctx.guild)
 
         # 6. Display success message
         await ctx.send("Welcome to the 1v1 ladder!")
+
+
+    @commands.command()
+    async def leave(self, ctx):
+        """Removes the user from the current ladder.
+        Automatically updates the rankings.
+
+        Example: .1v1leave"""
+
+        # Checks if posted in general channel
+        if not db.isGeneralChannel(ctx.channel):
+            return
+        
+        # Checks if player is signed up
+        isSignedUp = db.isPlayerSignedUp(ctx.author.id)
+
+        if not isSignedUp:
+            await ctx.send("You're not signed-up for the ladder!")
+            return
+
+        # Cancels active challenge of the player
+        db.cancelActiveChallenge(ctx.author.id)
+
+        # Removes player from ladder
+        db.kickPlayer(ctx.author.id)
+
+        # Updates ranking
+        await updateRankingMessage(ctx.guild)
+
+        # Feedback
+        await ctx.send("You have left the ladder!")
+
 
 
     # Used by users to challenge other users in the ladder
@@ -664,10 +705,11 @@ class PlayerCommands(commands.Cog, name = "Player Commands"):
             return
 
         # 5d. Is the other player in a rank or tier that allows the challenge?
-        isChallengePermitted = db.canChallenge(ctx.author.id, opponent.id, ladder)
+        isChallengePermitted = db.canChallengeBasedOnRank(ctx.author.id, opponent.id, ladder)
 
         if not isChallengePermitted:
-            await ctx.send(f"You can't challenge {opponent.name}! They must be either in the tier above yours, or in the same tier but higher ranked.")
+            rankRange = int(db.getConfig('rank_range'))
+            await ctx.send(f"You can't challenge {opponent.name}! They must at most {rankRange} ranks and 1 tier above you.")
             return
 
 
@@ -693,14 +735,8 @@ class PlayerCommands(commands.Cog, name = "Player Commands"):
             return
 
         # 5h. Did the user already play against this opponent last game?
-        lastChallengeInfo = db.getLastPlayedChallenge(ctx.author.id, ladder)
-
-        didPlaySameOpponentLastGame = False
-
-        if lastChallengeInfo is not None:
-            didPlaySameOpponentLastGame = (lastChallengeInfo.challenger == opponent.id or lastChallengeInfo.opponent == opponent.id)
-
-        if didPlaySameOpponentLastGame:
+        playerInfo = db.getPlayerInfo(ctx.author.id, ladder)
+        if playerInfo.lastOpponent is not None and playerInfo.lastOpponent == opponent.id:
             await ctx.send(f"You already played against {opponent.name} in your previous game! You have to play at least one other player before you can challenge the same person again.")
             return
 
@@ -714,7 +750,7 @@ class PlayerCommands(commands.Cog, name = "Player Commands"):
 
     # Used by users or admins to cancel challenges
     @commands.command()
-    async def cancel(self, ctx, player = None):
+    async def cancel(self, ctx, player: commands.MemberConverter = None):
         """Cancels the currently active challenge of the user.
         Admins can mention a player whose match should be cancelled instead.
         The player whose match got cancelled receives one cancellation token. If they exceed the maximum number
@@ -829,19 +865,30 @@ class PlayerCommands(commands.Cog, name = "Player Commands"):
         # 7. Update challenge and ranking in the database
         db.reportResult(activeChallenge, gameWon, ladder)
 
-        # 8. Timeout the challenging player from challenging for the configured time
+        # 8. Timeout the challenging player from challenging for the configured time and reset challenge protection
         outgoingCooldown = db.getConfig('outgoing_cooldown')
         db.giveChallengeCooldown(activeChallenge.challenger, outgoingCooldown, ladder)
+        db.giveChallengeProtection(activeChallenge.challenger, 0)
 
-        # 9. Give challenged player challenge protection
+        # 9. Give challenged player challenge protection and resets challenge cooldown
         challengeProtection = db.getConfig('challenge_protection')
         db.giveChallengeProtection(activeChallenge.opponent, challengeProtection, ladder)
+        db.giveChallengeCooldown(activeChallenge.opponent, 0)
 
         # 10. Edit ranking message
-        await updateRankingMessage(ctx)
+        await updateRankingMessage(ctx.guild)
 
         # 11. Display success message: Maybe information if someone gets promoted to a new tier, who got timeout
-        await ctx.send('Game result has been reported!')
+        challenger = ctx.guild.get_member(activeChallenge.challenger)
+        opponent = ctx.guild.get_member(activeChallenge.opponent)
+        winStr = ''
+
+        if gameWon:
+            winStr = 'W-L'
+        else:
+            winStr = 'L-W'
+
+        await ctx.send(f'Match has been reported: {challenger.mention} {winStr} {opponent.mention}')
 
 
 # Adds commands to the bot

@@ -66,6 +66,7 @@ class LadderDatabase:
                 Cancellations INT DEFAULT 0,
                 OutgoingTimeoutUntil DATETIME,
                 IngoingTimeoutUntil DATETIME,
+                LastOpponent BIGINT,
                 PRIMARY KEY (PlayerID)
             );""")
 
@@ -117,14 +118,14 @@ class LadderDatabase:
         if ladder == '':
             ladder = self.getConfig('current_ladder')
 
-        self.cursor.execute("SELECT PlayerID, DiscordID, Tier, Wins, Losses, Titles FROM Players WHERE Rank=%s AND Ladder=%s;", (rank, ladder,))
+        self.cursor.execute("SELECT PlayerID, DiscordID, Tier, Wins, Losses, Titles, LastOpponent FROM Players WHERE Rank=%s AND Ladder=%s;", (rank, ladder,))
         result = self.cursor.fetchall()
 
         if len(result) == 0 or result[0][0] is None:
             return None
         else:
             row = result[0]
-            return PlayerInfo(row[0], row[1], rank, row[2], row[3], row[4], row[5])
+            return PlayerInfo(row[0], row[1], rank, row[2], row[3], row[4], row[5], row[6])
 
     # Checks if player is signed up for the ladder
     def isPlayerSignedUp(self, discordID, ladder = ''):
@@ -186,7 +187,7 @@ class LadderDatabase:
         return timeoutEnd > currentTime
 
     # Returns if Player 1 is allowed to challenge Player 2
-    def canChallenge(self, discordID1, discordID2, ladder = ''):
+    def canChallengeBasedOnRank(self, discordID1, discordID2, ladder = ''):
         if ladder == '':
             ladder = self.getConfig('current_ladder')
 
@@ -201,13 +202,18 @@ class LadderDatabase:
         if challengerInfo.rank < opponentInfo.rank:
             return True
 
+        # You can always challenge people in your own tier
+        if challengerInfo.tier == opponentInfo.tier:
+            return True
+
         # You can't challenge players more than one tier above you
         if challengerInfo.tier > opponentInfo.tier + 1:
             return False
-
-        # You can't challenge player more than 3 ranks above you
-        if challengerInfo.rank > opponentInfo.rank + 3:
-            return False
+        
+        # You can challenge player more 3 or less ranks above you
+        rankRange = int(self.getConfig('rank_range'))
+        if challengerInfo.rank <= opponentInfo.rank + rankRange:
+            return True
 
         # In all other cases, you can challenge!
         return True
@@ -221,14 +227,22 @@ class LadderDatabase:
         playerInfo = self.getPlayerInfo(discordID)
         result = {}
 
-        # Gets all possible challengers based on rank and tier
+        rankRange = int(self.getConfig('rank_range'))
+        lastOpponentValue = playerInfo.lastOpponent
+
+        if playerInfo.lastOpponent is None:
+            lastOpponentValue = 0
+
+        # Selects all players above the given player's rank that could be challenged
         if playerInfo.rank == 1:
-            self.cursor.execute("SELECT DiscordID FROM Players WHERE Ladder=%s AND Tier=2 AND IngoingTimeoutUntil<NOW();", (ladder,))
-            result = self.cursor.fetchall()
+            self.cursor.execute("SELECT DiscordID FROM Players WHERE Ladder=%s AND IngoingTimeoutUntil<NOW() AND NOT PlayerID=%s AND Tier=2;",
+            (ladder, lastOpponentValue,))
         else:
-            self.cursor.execute("SELECT DiscordID FROM Players WHERE Ladder=%s AND NOT DiscordID=%s AND Rank<%s AND Rank>%s AND Tier>%s AND IngoingTimeoutUntil<NOW();",
-            (ladder, discordID, playerInfo.rank, playerInfo.rank - 4, playerInfo.tier - 2))
-            result = self.cursor.fetchall()
+            self.cursor.execute("""SELECT DiscordID FROM Players WHERE Ladder=%s AND IngoingTimeoutUntil<NOW() AND NOT PlayerID=%s AND NOT DiscordID=%s 
+            AND Rank<%s AND (Tier=%s OR (Tier=%s AND Rank>=%s));""",
+            (ladder, lastOpponentValue, playerInfo.discordID, playerInfo.rank, playerInfo.tier, playerInfo.tier-1, playerInfo.rank-rankRange))
+
+        result = self.cursor.fetchall()
 
         if len(result) == 0 or result[0][0] is None:
             return []
@@ -322,14 +336,14 @@ class LadderDatabase:
         if ladder == '':
             ladder = self.getConfig('current_ladder')
 
-        self.cursor.execute("SELECT PlayerID, Rank, Tier, Wins, Losses, Titles FROM Players WHERE DiscordID=%s AND Ladder=%s;", (discordID, ladder,))
+        self.cursor.execute("SELECT PlayerID, Rank, Tier, Wins, Losses, Titles, LastOpponent FROM Players WHERE DiscordID=%s AND Ladder=%s;", (discordID, ladder,))
         result = self.cursor.fetchall()
 
         if len(result) == 0 or result[0][0] is None:
             return None
         else:
             row = result[0]
-            return PlayerInfo(row[0], discordID, row[1], row[2], row[3], row[4], row[5])
+            return PlayerInfo(row[0], discordID, row[1], row[2], row[3], row[4], row[5], row[6])
 
     # Prohibits the given player from issueing challenges for the given number of days
     def giveChallengeCooldown(self, discordID, days, ladder = ''):
@@ -351,13 +365,13 @@ class LadderDatabase:
         if ladder == '':
             ladder = self.getConfig('current_ladder')
 
-        self.cursor.execute("SELECT PlayerID, DiscordID, Rank, Tier, Wins, Losses, Titles FROM Players WHERE Ladder=%s ORDER BY Rank LIMIT 100;", (ladder,))
+        self.cursor.execute("SELECT PlayerID, DiscordID, Rank, Tier, Wins, Losses, Titles, LastOpponent FROM Players WHERE Ladder=%s ORDER BY Rank LIMIT 100;", (ladder,))
         result = self.cursor.fetchall()
 
         players = []
 
         for row in result:
-            players += [PlayerInfo(row[0], row[1], row[2], row[3], row[4], row[5], row[6])]
+            players += [PlayerInfo(row[0], row[1], row[2], row[3], row[4], row[5], row[6], row[7])]
         
         return players
 
@@ -543,11 +557,11 @@ class LadderDatabase:
                 opponentInfo.titles += 1
 
         # Pushes changes to database
-        self.cursor.execute("UPDATE Players SET Rank=%s, Tier=%s, Wins=%s, Losses=%s, Titles=%s WHERE PlayerID=%s;", 
-        (challengerInfo.rank, challengerInfo.tier, challengerInfo.wins, challengerInfo.losses, challengerInfo.titles, challengerInfo.playerID,))
+        self.cursor.execute("UPDATE Players SET Rank=%s, Tier=%s, Wins=%s, Losses=%s, Titles=%s, LastOpponent=%s WHERE PlayerID=%s;", 
+        (challengerInfo.rank, challengerInfo.tier, challengerInfo.wins, challengerInfo.losses, challengerInfo.titles, opponentInfo.playerID, challengerInfo.playerID,))
 
-        self.cursor.execute("UPDATE Players SET Rank=%s, Tier=%s, Wins=%s, Losses=%s, Titles=%s WHERE PlayerID=%s;", 
-        (opponentInfo.rank, opponentInfo.tier, opponentInfo.wins, opponentInfo.losses, opponentInfo.titles, opponentInfo.playerID,))
+        self.cursor.execute("UPDATE Players SET Rank=%s, Tier=%s, Wins=%s, Losses=%s, Titles=%s, LastOpponent=%s WHERE PlayerID=%s;", 
+        (opponentInfo.rank, opponentInfo.tier, opponentInfo.wins, opponentInfo.losses, opponentInfo.titles, challengerInfo.playerID, opponentInfo.playerID,))
 
         self.database.commit()
 
@@ -651,7 +665,8 @@ class LadderDatabase:
             ('outgoing_cooldown', 1),
             ('challenge_protection', 1),
             ('ranking_message', 0),
-            ('signup_only', 0)
+            ('signup_only', 0),
+            ('rank_range',3 )
             ;""")
             self.database.commit()
 
@@ -716,7 +731,7 @@ class TimeoutInfo:
         self.incomingTimeout = protectionDeadline
 
 class PlayerInfo:
-    def __init__(self, playerID, discordID, rank, tier, wins, losses, titles):
+    def __init__(self, playerID, discordID, rank, tier, wins, losses, titles, lastOpponentID):
         self.playerID = playerID
         self.discordID = discordID
         self.rank = rank
@@ -724,6 +739,7 @@ class PlayerInfo:
         self.wins = wins
         self.losses = losses
         self.titles = titles
+        self.lastOpponent = lastOpponentID
 
 class CancelInfo:
     def __init__(self, challenger, challengerCancels, opponent, opponentCancels):
