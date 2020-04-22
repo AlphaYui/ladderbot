@@ -195,6 +195,20 @@ async def getRankingMessage(guild):
     except discord.errors.NotFound:
         return None
 
+def timeStrToHours(timeStr: str) -> int:
+    try:
+        if timeStr.endswith('d'):
+            days = int(timeStr[:-1])
+            return days * 24
+        elif timeStr.endswith('h'):
+            hours = int(timeStr[:-1])
+            return hours
+        else:
+            hours = int(timeStr)
+            return hours
+    except ValueError:
+        return 0
+
 
 ### BOT COMMANDS ###
 
@@ -408,12 +422,14 @@ class AdminCommands(commands.Cog, name = "Admin Commands"):
 
     # Used by admins to time out users from the ladder
     @commands.command()
-    async def timeout(self, ctx, player: commands.MemberConverter, duration: int):
-        """Times out a player for a given number of days.
+    async def timeout(self, ctx, player: commands.MemberConverter, duration: str = '0'):
+        """Times out a player for a given duration.
         This prevents them from challenging anyone and from getting challenged.
-        If the provided duration is zero, all timeouts and cooldowns are removed from the player.
+        If the provided duration is zero or the input is invalid, all timeouts and cooldowns are removed from the player.
+        The format of the duration given is a number followed by one character to signal what format the time is in.
+        Supported formats currently are: d (days), h (hours)
 
-        Example: .1v1timeout @Player 3"""
+        Example: .1v1timeout @Player 3d"""
 
         # 1. Check if user has admin role
         if not await hasAdminRights(ctx, bot):
@@ -425,12 +441,13 @@ class AdminCommands(commands.Cog, name = "Admin Commands"):
             return
 
         # 3. Add timeout to the database for outgoing and incoming challenges
-        db.giveChallengeCooldown(player.id, duration)
-        db.giveChallengeProtection(player.id, duration)
+        hours = timeStrToHours(duration)
+        db.giveChallengeCooldown(player.id, hours)
+        db.giveChallengeProtection(player.id, hours)
 
         # 4. Display success message
-        if duration > 0:
-            await ctx.send(f"{ctx.author.name} timed out {player.mention} for {duration} days.")
+        if hours > 0:
+            await ctx.send(f"{ctx.author.name} timed out {player.mention} for {hours} hours.")
         else:
             await ctx.send(f"{ctx.author.name} removed {player.mention}'s timeout.")
 

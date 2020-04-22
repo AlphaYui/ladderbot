@@ -346,19 +346,19 @@ class LadderDatabase:
             return PlayerInfo(row[0], discordID, row[1], row[2], row[3], row[4], row[5], row[6])
 
     # Prohibits the given player from issueing challenges for the given number of days
-    def giveChallengeCooldown(self, discordID, days, ladder = ''):
+    def giveChallengeCooldown(self, discordID, hours, ladder = ''):
         if ladder == '':
             ladder = self.getConfig('current_ladder')
 
-        self.cursor.execute("UPDATE Players SET OutgoingTimeoutUntil=(NOW() + INTERVAL %s DAY) WHERE DiscordID=%s AND Ladder=%s;", (days, discordID, ladder,))
+        self.cursor.execute("UPDATE Players SET OutgoingTimeoutUntil=(NOW() + INTERVAL %s HOUR) WHERE DiscordID=%s AND Ladder=%s;", (hours, discordID, ladder,))
         self.database.commit()
 
     # Protects the given player from being challenged for the given number of days
-    def giveChallengeProtection(self, discordID, days, ladder = ''):
+    def giveChallengeProtection(self, discordID, hours, ladder = ''):
         if ladder == '':
             ladder = self.getConfig('current_ladder')
 
-        self.cursor.execute("UPDATE Players SET IngoingTimeoutUntil=(NOW() + INTERVAL %s DAY) WHERE DiscordID=%s AND Ladder=%s;", (days, discordID, ladder,))
+        self.cursor.execute("UPDATE Players SET IngoingTimeoutUntil=(NOW() + INTERVAL %s HOUR) WHERE DiscordID=%s AND Ladder=%s;", (hours, discordID, ladder,))
         self.database.commit()
 
     def getRanking(self, ladder = ''):
@@ -433,7 +433,7 @@ class LadderDatabase:
         self.cursor.execute("""INSERT INTO Challenges (IssuedByID, OpponentID, Time) VALUES 
         ((SELECT PlayerID FROM Players WHERE DiscordID=%s AND Ladder=%s),
         (SELECT PlayerID FROM Players WHERE DiscordID=%s AND LADDER=%s),
-        (NOW() + INTERVAL %s DAY));""",
+        (NOW() + INTERVAL %s HOUR));""",
         (issuedByDiscordID, ladder, opponentDiscordID, ladder, challengeTimeout,))
 
         self.database.commit()
