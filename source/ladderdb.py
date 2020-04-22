@@ -196,7 +196,7 @@ class LadderDatabase:
 
         # The #1 player can only challenge tier 2
         if challengerInfo.rank == 1:
-            return opponentInfo.tier == 2
+            return opponentInfo.tier == 2 or opponentInfo.tier ==3
 
         # Others can challenge all players below them
         if challengerInfo.rank < opponentInfo.rank:
@@ -235,7 +235,7 @@ class LadderDatabase:
 
         # Selects all players above the given player's rank that could be challenged
         if playerInfo.rank == 1:
-            self.cursor.execute("SELECT DiscordID FROM Players WHERE Ladder=%s AND IngoingTimeoutUntil<NOW() AND NOT PlayerID=%s AND Tier=2;",
+            self.cursor.execute("SELECT DiscordID FROM Players WHERE Ladder=%s AND IngoingTimeoutUntil<NOW() AND NOT PlayerID=%s AND (Tier=2 OR Tier=3);",
             (ladder, lastOpponentValue,))
         else:
             self.cursor.execute("""SELECT DiscordID FROM Players WHERE Ladder=%s AND IngoingTimeoutUntil<NOW() AND NOT PlayerID=%s AND NOT DiscordID=%s 

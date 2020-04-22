@@ -129,7 +129,7 @@ async def updateRankingMessage(guild):
 
     if rankingMessage is None:
         rankingChannelID = int(db.getConfig('ranking_channel'))
-        rankingChannel = ctx.guild.get_channel(rankingChannelID)
+        rankingChannel = guild.get_channel(rankingChannelID)
 
         rankingMessage = await rankingChannel.send(embed = rankingEmbed)
         db.setConfig('ranking_message', rankingMessage.id)
