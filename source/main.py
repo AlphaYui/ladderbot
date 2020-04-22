@@ -495,9 +495,9 @@ class AdminCommands(commands.Cog, name = "Admin Commands"):
         admin_role           | Mention of the role required for admin commands
         signup_only          | 1 if players should only be able to sign-up and not challenge anyone yet. 0 otherwise
         num_cancels          | Number of allowed cancellations before a player gets kicked
-        challenge_timeout    | Number of days players have to play a game after the challenge was issued
-        outgoing_cooldown    | Number of days a player can't challenge after playing a game they challenged for
-        challenge_protection | Number of days a player can't be challenged after playing a game they got challenged for
+        challenge_timeout    | Number of hours players have to play a game after the challenge was issued
+        outgoing_cooldown    | Number of hours a player can't challenge after playing a game they challenged for
+        challenge_protection | Number of hours a player can't be challenged after playing a game they got challenged for
         rank_range           | Number of ranks a player can challenge above his own rank in other tiers
         ranking_message      | ID of the ranking message to be edited by the bot. Is set by bot automatically.
 
@@ -762,7 +762,7 @@ class PlayerCommands(commands.Cog, name = "Player Commands"):
 
         # 7. Display success message
         challengeTimeout = db.getConfig('challenge_timeout')
-        await ctx.send(f"{ctx.author.mention} has challenged {opponent.mention}! Play your game in the next {challengeTimeout} days and report the result using {prefix}report W/L.")
+        await ctx.send(f"{ctx.author.mention} has challenged {opponent.mention}! Play your game in the next {challengeTimeout} hours and report the result using {prefix}report W/L.")
 
 
     # Used by users or admins to cancel challenges
